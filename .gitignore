@@ -1,0 +1,25 @@
+# Dependency directories
+node_modules/
+.next/
+out/
+build/
+
+# Python virtual environments
+venv/
+.venv/
+env/
+ENV/
+__pycache__/
+*.pyc
+
+# Local configurations and database
+.env
+.env.local
+*.db
+*.sqlite
+
+# Local caches and intermediate frames
+storage/
+temp/
+tmp/
+*.log
