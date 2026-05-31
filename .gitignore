@@ -23,3 +23,7 @@ storage/
 temp/
 tmp/
 *.log
+
+# Setup checklist documentation (kept local-only)
+docs/setup.md
+
