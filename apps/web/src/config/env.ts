@@ -7,6 +7,10 @@ export interface WebConfig {
   STORAGE_PROVIDER: string;
   STORAGE_BUCKET: string;
   STORAGE_PUBLIC_BASE_URL: string;
+  AWS_REGION: string;
+  AWS_S3_BUCKET: string;
+  AWS_ACCESS_KEY_ID: string;
+  AWS_SECRET_ACCESS_KEY: string;
 }
 
 const REQUIRED_WEB_ENV_VARS = [
@@ -14,6 +18,10 @@ const REQUIRED_WEB_ENV_VARS = [
   'STORAGE_PROVIDER',
   'STORAGE_BUCKET',
   'STORAGE_PUBLIC_BASE_URL',
+  'AWS_REGION',
+  'AWS_S3_BUCKET',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
 ] as const;
 
 function validateEnv(): WebConfig {
@@ -41,6 +49,10 @@ function validateEnv(): WebConfig {
     STORAGE_PROVIDER: process.env.STORAGE_PROVIDER!,
     STORAGE_BUCKET: process.env.STORAGE_BUCKET!,
     STORAGE_PUBLIC_BASE_URL: process.env.STORAGE_PUBLIC_BASE_URL!,
+    AWS_REGION: process.env.AWS_REGION!,
+    AWS_S3_BUCKET: process.env.AWS_S3_BUCKET!,
+    AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID!,
+    AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY!,
   };
 }
 

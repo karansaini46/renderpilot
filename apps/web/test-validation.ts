@@ -4,4 +4,6 @@ console.log("SUCCESS");
 console.log(`STORAGE_PROVIDER=${env.STORAGE_PROVIDER}`);
 console.log(`STORAGE_BUCKET=${env.STORAGE_BUCKET}`);
 console.log(`STORAGE_PUBLIC_BASE_URL=${env.STORAGE_PUBLIC_BASE_URL}`);
-// DATABASE_URL is sensitive, so we do not print it.
+console.log(`AWS_REGION=${env.AWS_REGION}`);
+console.log(`AWS_S3_BUCKET=${env.AWS_S3_BUCKET}`);
+// DATABASE_URL, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY are sensitive and never printed.

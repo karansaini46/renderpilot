@@ -3,6 +3,10 @@ const REQUIRED_WEB_ENV_VARS = [
   'STORAGE_PROVIDER',
   'STORAGE_BUCKET',
   'STORAGE_PUBLIC_BASE_URL',
+  'AWS_REGION',
+  'AWS_S3_BUCKET',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
 ];
 
 function validateEnv() {
@@ -26,6 +30,10 @@ function validateEnv() {
     STORAGE_PROVIDER: process.env.STORAGE_PROVIDER,
     STORAGE_BUCKET: process.env.STORAGE_BUCKET,
     STORAGE_PUBLIC_BASE_URL: process.env.STORAGE_PUBLIC_BASE_URL,
+    AWS_REGION: process.env.AWS_REGION,
+    AWS_S3_BUCKET: process.env.AWS_S3_BUCKET,
+    AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY,
   };
 }
 
