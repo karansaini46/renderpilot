@@ -1,10 +1,10 @@
-# Dependency directories
+# Dependency folders
 node_modules/
 .next/
 out/
 build/
 
-# Python virtual environments
+# Python environments and artifacts
 venv/
 .venv/
 env/
@@ -12,18 +12,27 @@ ENV/
 __pycache__/
 *.pyc
 
-# Local configurations and database
+# Local settings and DB logs
 .env
 .env.local
 *.db
 *.sqlite
 
-# Local caches and intermediate frames
-storage/
-temp/
-tmp/
-*.log
+# Heavy weights and model checkpoints
+*.safetensors
+*.ckpt
+*.pt
+*.pth
 
-# Setup checklist documentation (kept local-only)
+# Local storage caches (preserves subfolder stubs)
+storage/projects/*
+!storage/projects/.gitkeep
+storage/models/*
+!storage/models/.gitkeep
+storage/workflows/*
+!storage/workflows/.gitkeep
+storage/outputs/*
+!storage/outputs/.gitkeep
+
+# Setup checklist documentation (keeps local only)
 docs/setup.md
-
