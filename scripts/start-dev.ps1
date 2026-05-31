@@ -40,15 +40,10 @@ $webDir = "$rootPath"
 $webCmd = "npm run dev:web"
 Start-DevService -Name "Next.js Web Frontend" -Dir $webDir -Command $webCmd
 
-# Start Blender worker
-$blenderDir = "$rootPath\workers\blender_worker"
-$blenderCmd = "if (Test-Path .\venv) { .\venv\Scripts\activate.ps1 }; python worker.py"
-Start-DevService -Name "Blender Render Worker" -Dir $blenderDir -Command $blenderCmd
-
-# Start ComfyUI worker
-$comfyDir = "$rootPath\workers\comfy_worker"
-$comfyCmd = "if (Test-Path .\venv) { .\venv\Scripts\activate.ps1 }; python worker.py"
-Start-DevService -Name "ComfyUI Pipeline Worker" -Dir $comfyDir -Command $comfyCmd
+# Start Unified Python worker daemon
+$workerDir = "$rootPath\apps\worker"
+$workerCmd = "if (Test-Path .\venv) { .\venv\Scripts\activate.ps1 }; python worker.py"
+Start-DevService -Name "Unified Local Worker Daemon" -Dir $workerDir -Command $workerCmd
 
 Write-Host ""
 Write-Host "[Success] All RenderPilot services requested." -ForegroundColor Green

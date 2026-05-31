@@ -1,95 +1,89 @@
-# RenderPilot
+# RenderPilot Monorepo
 
-RenderPilot is a local-first architectural visualization and rendering orchestration platform. It connects local design applications like Blender with local image generation pipelines (e.g., ComfyUI) to enable designers to visualize CAD structures and rendering ideas entirely offline.
-
-## System Architecture
-
-RenderPilot runs as a local monorepo consisting of:
-- **`apps/web`**: Next.js frontend console for dashboard management, project assets, and visualization workflows.
-- **`apps/api`**: FastAPI backend exposing REST endpoints and managing project metadata using a local SQLite database.
-- **`workers/blender_worker`**: A Python service that automates background, headless rendering pipelines using Blender's Python API.
-- **`workers/comfy_worker`**: A Python service that orchestrates local image-to-image and ControlNet generation pipelines through the ComfyUI API.
+RenderPilot is a laptop-first architectural visualization and rendering orchestration platform. It is engineered to bridge cloud-managed rendering gateway registers with offline, high-performance local rendering workstations.
 
 ---
 
-## Hardware Optimization Guidelines (RTX 3050 / 4GB VRAM Constraints)
+## Architectural Topology
 
-To run successfully on a Windows laptop with a 4GB VRAM GPU (RTX 3050-class), RenderPilot enforces strict hardware utilization boundaries:
+RenderPilot operates on a decoupled cloud-gateway and local-worker topology:
 
-1. **Batch Size Limit**: Locked to `1` image generation per request to prevent Out-Of-Memory (OOM) errors.
-2. **Model Standard**: Uses Stable Diffusion 1.5 (SD 1.5) checkpoints, which consume ~2.0 GB VRAM, leaving sufficient overhead for UI processes and operating system operations.
-3. **ControlNet Boundary**: Limited to a maximum of `1` active ControlNet layer (e.g., Depth or Canny) per render run.
-4. **No Automated Training**: Automated model fine-tuning (such as LoRA training) is excluded from the MVP. Training operations require massive VRAM overhead and will trigger OOMs on 4GB hardware.
-5. **Local-Only Storage**: All project files, CAD models, pipeline schemas, and final renders are stored locally in the `/storage` directory. No external cloud endpoints are utilized.
-
----
-
-## Local Setup Instructions (Windows)
-
-### Prerequisites
-- **Python 3.10 or 3.11** (Ensure Python is added to your Windows PATH)
-- **Node.js LTS (v18 or v20)** and npm
-- **Blender** (v4.0+ recommended)
-- **ComfyUI** (running locally on port `8188`)
-
-### Step 1: Clone and Configure Environment
-
-1. Copy the environment configuration template:
-   ```cmd
-   copy .env.example .env
-   ```
-2. Open `.env` and update the paths to match your local setup:
-   - `BLENDER_EXE_PATH`: Point to your local `blender.exe`.
-   - `COMFYUI_URL`: Point to your running ComfyUI instance (default: `http://127.0.0.1:8188`).
-   - `PROJECT_STORAGE_PATH`: Path to this repository's `storage` folder.
-   - `SQLITE_DB_PATH`: Path to the SQLite database file (e.g., inside the `storage` folder).
-
-### Step 2: Install Node.js Dependencies
-
-From the root directory, run:
-```cmd
-npm install
+```
++-------------------------------------------------+
+|               Cloud Gateway (API)               |
+|  - Manages User accounts and approvals          |
+|  - Persists jobs and rules in Neon PostgreSQL  |
+|  - Exposes endpoints to query worker node state |
++-------------------------------------------------+
+                        ^
+                        | (REST Polling via HTTPS)
+                        v
++-------------------------------------------------+
+|       Private Windows Workstation Worker        |
+|  - Polls gateway for active rendering jobs      |
+|  - Invokes headless Blender geometry passes     |
+|  - Triggers local ComfyUI Stable Diffusion runs |
+|  - Enforces VRAM safeguards (batch size 1)      |
++-------------------------------------------------+
 ```
 
-### Step 3: Set Up the FastAPI Backend
-
-1. Navigate to the API application:
-   ```cmd
-   cd apps/api
-   ```
-2. Create and activate a Python virtual environment:
-   ```cmd
-   python -m venv venv
-   .\venv\Scripts\activate
-   ```
-3. Install Python dependencies:
-   ```cmd
-   pip install -r requirements.txt
-   ```
-
-### Step 4: Set Up the Workers
-
-Follow similar steps for `workers/blender_worker` and `workers/comfy_worker`:
-1. Navigate to the worker directory.
-2. Create and activate a virtual environment.
-3. Install dependencies:
-   ```cmd
-   pip install -r requirements.txt
-   ```
+- **Cloud Gateway Registry**: The online application uses **Neon PostgreSQL** as the primary datastore to manage users, queued render tasks, approval feedback, stylistic rules, and worker heartbeat checks.
+- **Local Laptop Worker**: Heavy computational workload is handled by a private Windows laptop worker running Blender, ComfyUI, and Stable Diffusion. 
+- **Security & Networking**: The laptop worker functions entirely as a client pulling assignments from the cloud gateway. **Users never connect directly to the laptop worker**, removing firewall configuration and port-forwarding requirements.
 
 ---
 
-## Development Operations
+## Monorepo Module Layout
 
-### Running the Services
+```
+renderpilot/
+├── apps/
+│   ├── web/                     # Next.js & Tailwind CSS Frontend Console
+│   ├── api/                     # FastAPI Gateway API (communicates with Neon PostgreSQL)
+│   └── worker/                  # Unified Python Worker polling and running render passes
+├── packages/
+│   └── shared/                  # Shared helper libraries and database validation schemes
+├── blender/
+│   ├── scripts/                 # Headless Blender python automation utilities
+│   └── presets/                 # Blender camera and lighting templates
+├── comfyui/
+│   └── workflows/               # JSON workflow templates for local stable diffusion pipelines
+├── infra/                       # Docker deployment configs and environment manifests
+├── storage/                     # Git-ignored local file cache for checkpoints and output files
+├── docs/                        # Setup guides and reference documents
+├── scripts/                     # Developer utility and environment test scripts
+└── package.json                 # Monorepo workspaces definition
+```
 
-To run the web app and API concurrently in development mode, run the startup script:
+---
+
+## Laptop Hardware Profile Constraints (RTX 3050 / 4GB VRAM)
+
+The workstation worker is optimized for hardware profiles under 4GB VRAM. It enforces:
+1. **Single Frame Limit**: Batch size parameters are strictly locked to `1` in both FastAPI validation schemas and the ComfyUI API runner.
+2. **Stable Diffusion 1.5 Baseline**: Fits easily within 2GB of VRAM, leaving memory buffers for OS display functions.
+3. **ControlNet Limitation**: Restricts active rendering passes to a maximum of `1` active ControlNet map (e.g. depth model extraction).
+4. **No Automated Fine-Tuning**: Excludes automatic training jobs (such as LoRA training scripts) which exceed VRAM limits on laptop hardware.
+
+---
+
+## Installation & Startup
+
+Refer to the detailed guide in the documentation folder:
+- **Workstation Configuration**: [docs/setup-windows.md](file:///C:/Users/Vaidehi/Desktop/renderpiloy/docs/setup-windows.md)
+
+### Verification
+
+Ensure your local laptop environment meets all dependencies by executing:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\check_environment.ps1
+```
+
+### Dev Startup
+
+Run the development process orchestrator:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 ```
-
-Or start the servers individually:
-- **Frontend (`apps/web`)**: `npm run dev:web` (Runs on `http://localhost:3000`)
-- **Backend (`apps/api`)**: Activate venv and run `uvicorn main:app --reload` (Runs on `http://localhost:8000`)
-- **Blender Worker**: Activate venv and run `python worker.py`
-- **ComfyUI Worker**: Activate venv and run `python worker.py`
+- **Web App UI**: `http://localhost:3000`
+- **FastAPI Documentation**: `http://localhost:8000/docs`

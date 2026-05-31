@@ -33,13 +33,11 @@ Use this checklist to track development stages, local environment validation, an
 ---
 
 ## 3. Worker Execution Checklist
-- [ ] Run Blender Worker:
-  - Activate venv in `workers/blender_worker/` and run `python worker.py`.
+- [ ] Run Local Worker Daemon:
+  - Activate venv in `apps/worker/` and run `python worker.py`.
   - Create a mock `.blend` file in `storage/projects/` corresponding to the registered project.
-  - Submit a new render task and verify that the Blender worker detects the job, sets it to `BLENDER_EXPORT`, runs successfully, and outputs the depth geometry pass.
-- [ ] Run ComfyUI Worker:
-  - Activate venv in `workers/comfy_worker/` and run `python worker.py`.
-  - Verify that the ComfyUI worker polls the job queue, picks up the job with status `GENERATING`, constructs the API payload, and generates the final output frame in `storage/outputs/`.
+  - Submit a new render task and verify that the worker detects the job, sets status updates, triggers headless Blender geometry checks, contacts the ComfyUI API runner, and writes the output image to `storage/outputs/`.
+
 
 ---
 
