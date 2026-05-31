@@ -1,0 +1,250 @@
+// Prisma ORM Schema mapping for RenderPilot database
+// Neon PostgreSQL cloud datastore setup
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// 1. Users model
+model User {
+  id        String    @id
+  email     String    @unique
+  name      String?
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
+  projects  Project[]
+
+  @@map("users")
+}
+
+// 2. Projects model
+model Project {
+  id               String            @id
+  name             String
+  userId           String?           @map("user_id")
+  status           String            @default("active")
+  createdAt        DateTime          @default(now()) @map("created_at")
+  updatedAt        DateTime          @default(now()) @updatedAt @map("updated_at")
+  user             User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+  projectFiles     ProjectFile[]
+  renderJobs       RenderJob[]
+  renders          Render[]
+  materialMappings MaterialMapping[]
+
+  @@map("projects")
+  @@index([createdAt])
+}
+
+// 3. Project Files model (large asset paths/URLs only)
+model ProjectFile {
+  id           String   @id
+  projectId    String   @map("project_id")
+  fileUrl      String   @map("file_url")
+  fileType     String   @map("file_type")
+  metadataJson String?  @default("{}") @map("metadata_json")
+  createdAt    DateTime @default(now()) @map("created_at")
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("project_files")
+  @@index([projectId])
+  @@index([createdAt])
+}
+
+// 4. Workers model
+model Worker {
+  id            String      @id
+  name          String
+  status        String      @default("offline") // online, offline, busy
+  ipAddress     String?     @map("ip_address")
+  hostname      String?
+  lastHeartbeat DateTime?   @map("last_heartbeat")
+  settingsJson  String?     @default("{}") @map("settings_json")
+  createdAt     DateTime    @default(now()) @map("created_at")
+  renderJobs    RenderJob[]
+  benchmarks    Benchmark[]
+
+  @@map("workers")
+  @@index([status])
+  @@index([createdAt])
+}
+
+// 5. Render Jobs model
+model RenderJob {
+  id           String      @id
+  projectId    String      @map("project_id")
+  workerId     String?     @map("worker_id")
+  status       String      @default("queued") // queued, claimed, processing, completed, failed, cancelled
+  progress     Int         @default(0)
+  errorMessage String?     @map("error_message")
+  settingsJson String?     @default("{}") @map("settings_json")
+  createdAt    DateTime    @default(now()) @map("created_at")
+  completedAt  DateTime?   @map("completed_at")
+  project      Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  worker       Worker?     @relation(fields: [workerId], references: [id], onDelete: SetNull)
+  renders      Render[]
+  jobEvents    JobEvent[]
+
+  @@map("render_jobs")
+  @@index([status])
+  @@index([projectId])
+  @@index([createdAt])
+}
+
+// 6. Styles model
+model Style {
+  id             String           @id
+  name           String           @unique
+  promptTemplate String           @map("prompt_template")
+  negativePrompt String?          @map("negative_prompt")
+  settingsJson   String?          @default("{}") @map("settings_json")
+  active         Boolean          @default(true)
+  createdAt      DateTime         @default(now()) @map("created_at")
+  renders        Render[]
+  trainingSamples TrainingSample[]
+  loraVersions   LoraVersion[]
+
+  @@map("styles")
+}
+
+// 7. Renders model
+model Render {
+  id              String           @id
+  jobId           String?          @map("job_id")
+  projectId       String           @map("project_id")
+  baseImageUrl    String?          @map("base_image_url")
+  finalImageUrl   String           @map("final_image_url")
+  depthUrl        String?          @map("depth_url")
+  cannyUrl        String?          @map("canny_url")
+  normalUrl       String?          @map("normal_url")
+  styleId         String?          @map("style_id")
+  prompt          String
+  negativePrompt  String?          @map("negative_prompt")
+  seed            BigInt?
+  settingsJson    String?          @default("{}") @map("settings_json")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  project         Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  job             RenderJob?       @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  style           Style?           @relation(fields: [styleId], references: [id], onDelete: SetNull)
+  feedback        RenderFeedback?
+  preferenceMemory PreferenceMemory[]
+  trainingSamples TrainingSample[]
+
+  @@map("renders")
+  @@index([projectId])
+  @@index([createdAt])
+}
+
+// 8. Render Feedback model
+model RenderFeedback {
+  id            String   @id
+  renderId      String   @unique @map("render_id")
+  approved      Boolean  @default(false)
+  rating        Int?
+  scoresJson    String?  @default("{}") @map("scores_json")
+  notes         String?
+  createdAt     DateTime @default(now()) @map("created_at")
+  render        Render   @relation(fields: [renderId], references: [id], onDelete: Cascade)
+
+  @@map("render_feedback")
+  @@index([createdAt])
+}
+
+// 9. Material Mappings model
+model MaterialMapping {
+  id               String   @id
+  projectId        String   @map("project_id")
+  objectName       String   @map("object_name")
+  detectedClass    String   @map("detected_class")
+  selectedMaterial String   @map("selected_material")
+  confidence       Float    @map("confidence")
+  locked           Boolean  @default(false)
+  correctionSource String?  @map("correction_source")
+  createdAt        DateTime @default(now()) @map("created_at")
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("material_mappings")
+  @@index([projectId])
+  @@index([createdAt])
+}
+
+// 10. Preference Memory model
+model PreferenceMemory {
+  id             String   @id
+  scope          String
+  key            String
+  valueJson      String   @map("value_json")
+  score          Float    @default(0.0)
+  sourceRenderId String?  @map("source_render_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+  sourceRender   Render?  @relation(fields: [sourceRenderId], references: [id], onDelete: SetNull)
+
+  @@map("preference_memory")
+  @@index([createdAt])
+}
+
+// 11. Training Samples model (stores only approved training candidate metadata)
+model TrainingSample {
+  id                  String   @id
+  renderId            String   @map("render_id")
+  styleId             String   @map("style_id")
+  imageUrl            String   @map("image_url")
+  caption             String?
+  qualityScore        Float?   @map("quality_score")
+  approvedForTraining Boolean  @default(false) @map("approved_for_training")
+  createdAt           DateTime @default(now()) @map("created_at")
+  render              Render   @relation(fields: [renderId], references: [id], onDelete: Cascade)
+  style               Style    @relation(fields: [styleId], references: [id], onDelete: Cascade)
+
+  @@map("training_samples")
+  @@index([createdAt])
+}
+
+// 12. Job Events model
+model JobEvent {
+  id          String    @id
+  jobId       String    @map("job_id")
+  eventType   String    @map("event_type")
+  message     String
+  detailsJson String?   @default("{}") @map("details_json")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  job         RenderJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@map("job_events")
+  @@index([createdAt])
+}
+
+// 13. LoRA Versions model
+model LoraVersion {
+  id             String   @id
+  styleId        String   @map("style_id")
+  versionName    String   @map("version_name")
+  fileUrl        String   @map("file_url")
+  datasetSize    Int?     @map("dataset_size")
+  benchmarkScore Float?   @map("benchmark_score")
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+  style          Style    @relation(fields: [styleId], references: [id], onDelete: Cascade)
+
+  @@map("lora_versions")
+  @@index([createdAt])
+}
+
+// 14. Benchmarks model
+model Benchmark {
+  id                  String   @id
+  workerId            String   @map("worker_id")
+  scoreName           String   @map("score_name")
+  scoreValue          Float    @map("score_value")
+  testDurationSeconds Float?   @map("test_duration_seconds")
+  detailsJson         String?  @default("{}") @map("details_json")
+  createdAt           DateTime @default(now()) @map("created_at")
+  worker              Worker   @relation(fields: [workerId], references: [id], onDelete: Cascade)
+
+  @@map("benchmarks")
+  @@index([createdAt])
+}
