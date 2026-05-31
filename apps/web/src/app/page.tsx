@@ -31,17 +31,20 @@ const INITIAL_PROJECTS = [
 
 // Presets for the architectural visualization pipeline
 const PIPELINE_PRESETS = [
-  { id: "photo_int", name: "Interior Photorealistic", model: "SD 1.5 (Arch-Refined)", controlnet: "Depth", steps: 30, cfg: 7.5 },
-  { id: "photo_ext", name: "Daylight Exterior", model: "SD 1.5 (Landscape-v2)", controlnet: "Canny Edge", steps: 25, cfg: 8.0 },
-  { id: "clay_concept", name: "Clay Concept Wireframe", model: "SD 1.5 (Clay-Base)", controlnet: "None", steps: 15, cfg: 5.0 },
+  { id: "style_mod_lux_ext", name: "Modern Luxury Exterior", model: "SD 1.5 (Arch-Refined)", controlnet: "Depth", steps: 30, cfg: 7.5 },
+  { id: "style_warm_lux_int", name: "Warm Luxury Interior", model: "SD 1.5 (Arch-Refined)", controlnet: "Depth", steps: 28, cfg: 7.0 },
+  { id: "style_min_white", name: "Minimal White Concept", model: "SD 1.5 (Clay-Base)", controlnet: "None", steps: 20, cfg: 6.5 },
+  { id: "style_trop_villa", name: "Tropical Villa", model: "SD 1.5 (Landscape-v2)", controlnet: "Canny Edge", steps: 30, cfg: 8.0 },
+  { id: "style_night_ext", name: "Night Exterior", model: "SD 1.5 (Night-Refined)", controlnet: "Depth", steps: 35, cfg: 8.0 },
+  { id: "style_real_estate", name: "Real Estate Bright", model: "SD 1.5 (Landscape-v2)", controlnet: "Canny Edge", steps: 25, cfg: 7.0 },
 ];
 
 export default function Dashboard() {
   // State variables for interactive UI demo
   const [projects, setProjects] = useState(INITIAL_PROJECTS);
   const [selectedProjectId, setSelectedProjectId] = useState("proj_1");
-  const [selectedPresetId, setSelectedPresetId] = useState("photo_int");
-  const [prompt, setPrompt] = useState("scandinavian modern living room, wooden floor, large windows, cozy fireplace, high-end furniture, architectural digest photography, hyperdetailed");
+  const [selectedPresetId, setSelectedPresetId] = useState("style_mod_lux_ext");
+  const [prompt, setPrompt] = useState("modern luxury concrete and glass villa, cantilevered balconies, infinity pool reflecting warm glowing architectural lights, sunset sky, landscaped garden, architectural digest photography");
   const [negativePrompt, setNegativePrompt] = useState("deformed, lowres, blurry, bad lighting, text, logo, watermark");
   
   // VRAM monitoring simulation (4GB RTX 3050 threshold)
@@ -69,7 +72,7 @@ export default function Dashboard() {
       setVramUsage(3.8); // Simulates pushing the limit
     } else {
       setIsVramWarning(false);
-      setVramUsage(selectedPresetId === "clay_concept" ? 1.4 : 2.2);
+      setVramUsage(selectedPresetId === "style_min_white" ? 1.4 : 2.2);
     }
   }, [batchSize, controlnetCount, selectedPresetId]);
 
@@ -118,6 +121,7 @@ export default function Dashboard() {
       }
     }, 450);
   };
+
 
   return (
     <div className="min-h-screen p-6 flex flex-col justify-between">
@@ -236,12 +240,18 @@ export default function Dashboard() {
                       key={preset.id}
                       onClick={() => {
                         setSelectedPresetId(preset.id);
-                        if (preset.id === "clay_concept") {
-                          setPrompt("minimalist white clay architectural model, sharp shadows, high-contrast, clean contours, studio background");
-                        } else if (preset.id === "photo_ext") {
-                          setPrompt("modern glass villa facade, dramatic sunset sky, concrete patio, swimming pool reflection, detailed architectural lighting");
+                        if (preset.id === "style_warm_lux_int") {
+                          setPrompt("luxury warm living room interior, oak wood paneling, travertine marble fireplace, bouclé fabric sofa, soft ambient lighting, high ceilings, large windows looking out to a garden, premium furniture, cozy mood");
+                        } else if (preset.id === "style_min_white") {
+                          setPrompt("conceptual architectural model, minimalist white matte surfaces, clean sharp shadows, geometric grid lines, studio lighting background, pure white and soft grey tones, sharp contours, wireframe details");
+                        } else if (preset.id === "style_trop_villa") {
+                          setPrompt("open-air tropical architectural pavilion, teak wood pillars, thatched bamboo detailing, surrounded by lush palm trees, volcanic stone pathways, bright sunny daylight, cinematic volumetric fog");
+                        } else if (preset.id === "style_night_ext") {
+                          setPrompt("contemporary smart home architecture at twilight, glowing led outline trim, warm interior light showing through floor-to-ceiling glass panes, starry night sky, wet concrete driveway reflections, moody lighting");
+                        } else if (preset.id === "style_real_estate") {
+                          setPrompt("professional real estate exterior photograph, bright daylight, wide-angle-lens, clean manicured lawn, fresh paint, crystal clear blue sky, inviting front facade");
                         } else {
-                          setPrompt("scandinavian modern living room, wooden floor, large windows, cozy fireplace, high-end furniture, architectural digest photography");
+                          setPrompt("modern luxury concrete and glass villa, cantilevered balconies, infinity pool reflecting warm glowing architectural lights, sunset sky, landscaped garden, architectural digest photography");
                         }
                       }}
                       className={`p-3 text-left rounded-lg border text-xs transition-all flex justify-between items-center ${

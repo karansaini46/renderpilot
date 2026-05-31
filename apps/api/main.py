@@ -1,16 +1,45 @@
 import os
+import json
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from typing import List
-import datetime
+from typing import List, Optional
 
 import models
 import schemas
+import repository
 from database import engine, get_db
 
-# Automatically initialize SQLite database tables
-models.Base.metadata.create_all(bind=engine)
+# Initialize database schemas and seed initial data using SQL scripts
+def run_migrations_and_seeding():
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    schema_path = os.path.join(current_dir, "migrations", "schema.sql")
+    seed_path = os.path.join(current_dir, "migrations", "seed.sql")
+
+    # Connect to local SQLite database using SQLAlchemy engine connection pool
+    with engine.begin() as conn:
+        # Run schema migration script
+        if os.path.exists(schema_path):
+            print(f"[Database] Executing schema migrations from: {schema_path}")
+            with open(schema_path, "r", encoding="utf-8") as f:
+                schema_sql = f.read()
+                raw_conn = conn.connection
+                cursor = raw_conn.cursor()
+                cursor.executescript(schema_sql)
+                cursor.close()
+        
+        # Run seeding script for initial styles
+        if os.path.exists(seed_path):
+            print(f"[Database] Seeding initial styles from: {seed_path}")
+            with open(seed_path, "r", encoding="utf-8") as f:
+                seed_sql = f.read()
+                raw_conn = conn.connection
+                cursor = raw_conn.cursor()
+                cursor.executescript(seed_sql)
+                cursor.close()
+
+# Run database setup at file load time to guarantee database preparation
+run_migrations_and_seeding()
 
 app = FastAPI(
     title="RenderPilot Core API",
@@ -18,10 +47,10 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Set up local cross-origin request permissions
+# CORS Configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict to localhost in production but allow all in local dev
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -42,14 +71,13 @@ def read_root():
 def get_system_status():
     blender_path = os.getenv("BLENDER_EXE_PATH", "")
     blender_configured = os.path.exists(blender_path) if blender_path else False
-    
     comfy_url = os.getenv("COMFYUI_URL", "http://127.0.0.1:8188")
     
     return schemas.SystemStatusResponse(
         api_status="online",
         blender_configured=blender_configured,
         blender_path=blender_path,
-        comfyui_configured=True,  # Assumed true for worker integration
+        comfyui_configured=True,
         comfyui_url=comfy_url,
         vram_profile="4GB RTX 3050 Optimized Profile (SD 1.5 default)",
         max_batch_size=1,
@@ -61,32 +89,30 @@ def get_system_status():
 
 @app.post("/projects", response_model=schemas.ProjectResponse, status_code=status.HTTP_201_CREATED)
 def create_project(project: schemas.ProjectCreate, db: Session = Depends(get_db)):
-    db_project = db.query(models.Project).filter(models.Project.id == project.id).first()
+    db_project = repository.get_project(db, project.id)
     if db_project:
         raise HTTPException(
             status_code=400,
             detail="Project with this ID already exists."
         )
-    
-    new_project = models.Project(
-        id=project.id,
+    return repository.create_project(
+        db=db,
+        project_id=project.id,
         name=project.name,
-        source_file=project.source_file
+        project_type=project.project_type,
+        input_type=project.input_type,
+        status=project.status
     )
-    db.add(new_project)
-    db.commit()
-    db.refresh(new_project)
-    return new_project
 
 
 @app.get("/projects", response_model=List[schemas.ProjectResponse])
 def read_projects(db: Session = Depends(get_db)):
-    return db.query(models.Project).order_by(models.Project.updated_at.desc()).all()
+    return repository.get_projects(db)
 
 
 @app.get("/projects/{project_id}", response_model=schemas.ProjectResponse)
 def read_project(project_id: str, db: Session = Depends(get_db)):
-    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    project = repository.get_project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
     return project
@@ -94,56 +120,43 @@ def read_project(project_id: str, db: Session = Depends(get_db)):
 
 @app.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_project(project_id: str, db: Session = Depends(get_db)):
-    project = db.query(models.Project).filter(models.Project.id == project_id).first()
-    if not project:
+    success = repository.delete_project(db, project_id)
+    if not success:
         raise HTTPException(status_code=404, detail="Project not found.")
-    db.delete(project)
-    db.commit()
     return None
+
+
+# --- STYLE ENDPOINTS ---
+
+@app.get("/styles", response_model=List[schemas.StyleResponse])
+def read_styles(db: Session = Depends(get_db)):
+    return repository.get_styles(db)
 
 
 # --- RENDER JOB ENDPOINTS ---
 
 @app.post("/render", response_model=schemas.RenderJobResponse, status_code=status.HTTP_201_CREATED)
 def create_render_job(job: schemas.RenderJobCreate, db: Session = Depends(get_db)):
-    # Verify the project exists first
-    project = db.query(models.Project).filter(models.Project.id == job.project_id).first()
+    project = repository.get_project(db, job.project_id)
     if not project:
         raise HTTPException(
             status_code=404, 
             detail=f"Cannot associate render job. Project with ID '{job.project_id}' not found."
         )
-
-    # Hardware verification failsafe (redundant check alongside schemas)
-    if job.batch_size != 1 or job.controlnet_layers > 1:
-        raise HTTPException(
-            status_code=400,
-            detail="Hardware parameters exceed 4GB VRAM safety threshold (max batch size: 1, max controlnets: 1)."
-        )
-
-    new_job = models.RenderJob(
-        id=job.id,
+    
+    # Store settings dictionary directly via custom setter
+    return repository.create_render_job(
+        db=db,
+        job_id=job.id,
         project_id=job.project_id,
-        preset_name=job.preset_name,
-        prompt=job.prompt,
-        negative_prompt=job.negative_prompt,
-        batch_size=job.batch_size,
-        controlnet_layers=job.controlnet_layers,
-        status="PENDING"
+        job_type=job.job_type,
+        settings_json=json.dumps(job.settings) if job.settings else "{}"
     )
-    db.add(new_job)
-    
-    # Touch the project's updated_at timestamp
-    project.updated_at = datetime.datetime.utcnow()
-    
-    db.commit()
-    db.refresh(new_job)
-    return new_job
 
 
 @app.get("/render/{job_id}", response_model=schemas.RenderJobResponse)
 def read_render_job(job_id: str, db: Session = Depends(get_db)):
-    job = db.query(models.RenderJob).filter(models.RenderJob.id == job_id).first()
+    job = repository.get_render_job(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Render job not found.")
     return job
@@ -151,31 +164,25 @@ def read_render_job(job_id: str, db: Session = Depends(get_db)):
 
 @app.get("/render/project/{project_id}", response_model=List[schemas.RenderJobResponse])
 def read_project_render_jobs(project_id: str, db: Session = Depends(get_db)):
-    return db.query(models.RenderJob).filter(models.RenderJob.project_id == project_id).order_by(models.RenderJob.created_at.desc()).all()
+    return repository.get_project_jobs(db, project_id)
 
 
-# Callback API endpoint used by local workers to update orchestration states
+# Callback route for local workers to update job progress status
 @app.post("/render/{job_id}/update", response_model=schemas.RenderJobResponse)
 def update_render_job(
     job_id: str, 
     status: str, 
-    output_image_path: Optional[str] = None, 
+    progress: int = 0,
     error_message: Optional[str] = None, 
     db: Session = Depends(get_db)
 ):
-    job = db.query(models.RenderJob).filter(models.RenderJob.id == job_id).first()
+    job = repository.update_render_job(
+        db=db,
+        job_id=job_id,
+        status=status,
+        progress=progress,
+        error_message=error_message
+    )
     if not job:
         raise HTTPException(status_code=404, detail="Render job not found.")
-    
-    job.status = status
-    if output_image_path:
-        job.output_image_path = output_image_path
-    if error_message:
-        job.error_message = error_message
-    
-    if status in ["COMPLETED", "FAILED"]:
-        job.completed_at = datetime.datetime.utcnow()
-        
-    db.commit()
-    db.refresh(job)
     return job
