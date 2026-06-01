@@ -124,30 +124,59 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
         );
         setFilesList(resolvedFiles);
 
-        // Resolve download URLs for all renders to populate previewUrl
+        // Resolve download URLs for all renders to populate previewUrl and baseDownloadUrl, and load feedback
         const resolvedRenders = await Promise.all(
           (data.renders || []).map(async (render: any) => {
+            let previewUrl = render.finalImageUrl;
+            let baseDownloadUrl = null;
+            
             try {
               const urlRes = await fetch(`/api/storage/download-url?key=${encodeURIComponent(render.finalImageUrl)}`);
               if (urlRes.ok) {
                 const urlData = await urlRes.json();
-                return {
-                  ...render,
-                  previewUrl: urlData.url,
-                  status: render.status || 'pending',
-                  style: render.styleId ? render.styleId.replace('style_', '').replace(/_/g, ' ') : 'Custom Style',
-                  rating: render.rating || 0
-                };
+                previewUrl = urlData.url;
               }
             } catch (err) {
               console.error('Failed to get download URL for render:', err);
             }
+
+            if (render.baseImageUrl) {
+              try {
+                const baseRes = await fetch(`/api/storage/download-url?key=${encodeURIComponent(render.baseImageUrl)}`);
+                if (baseRes.ok) {
+                  const baseData = await baseRes.json();
+                  baseDownloadUrl = baseData.url;
+                }
+              } catch (err) {
+                console.error('Failed to get download URL for base image:', err);
+              }
+            }
+
+            let status = 'pending';
+            let rating = 0;
+            let feedbackDetails = {};
+            let feedbackNotes = '';
+
+            if (render.feedback) {
+              status = render.feedback.approved ? 'approved' : 'rejected';
+              rating = render.feedback.rating || 0;
+              feedbackNotes = render.feedback.notes || '';
+              try {
+                feedbackDetails = JSON.parse(render.feedback.scoresJson || '{}');
+              } catch {
+                feedbackDetails = {};
+              }
+            }
+
             return {
               ...render,
-              previewUrl: render.finalImageUrl,
-              status: 'pending',
-              style: 'Custom Style',
-              rating: 0
+              previewUrl,
+              baseDownloadUrl,
+              status,
+              style: render.styleId ? render.styleId.replace('style_', '').replace(/_/g, ' ') : 'Custom Style',
+              rating,
+              feedbackDetails,
+              feedbackNotes
             };
           })
         );
@@ -360,22 +389,84 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
     }
   };
 
-  const handleApproveRender = async (renderId: string) => {
-    // Mock approve for UI
-    if (!project) return;
-    setProject({
-      ...project,
-      renders: project.renders.map(r => r.id === renderId ? { ...r, status: 'approved', rating: 5 } : r)
+  const REJECTION_REASONS = [
+    'geometry changed',
+    'bad windows',
+    'wrong material',
+    'too fake',
+    'too dark',
+    'not premium enough',
+    'distorted furniture',
+    'wrong style'
+  ];
+
+  const handleOpenReviewDrawer = (render: any) => {
+    setSelectedReviewRender(render);
+    
+    const details = render.feedbackDetails || {};
+    const scores = details.scores || {};
+    
+    setFeedbackApproved(render.status === 'approved' || render.status === 'pending');
+    setFeedbackRating(render.rating || 5);
+    setFeedbackScores({
+      geometry: scores.geometry || 5,
+      lighting: scores.lighting || 5,
+      realism: scores.realism || 5,
+      material: scores.material || 5,
+      style: scores.style || 5,
+      clientReady: scores.clientReady || 5
     });
+    setFeedbackAction(details.action || 'regenerate similar');
+    setFeedbackRejections(details.rejectionReasons || []);
+    setFeedbackNotes(render.feedbackNotes || '');
+    
+    setIsReviewDrawerOpen(true);
   };
 
-  const handleRejectRender = async (renderId: string) => {
-    // Mock reject for UI
-    if (!project) return;
-    setProject({
-      ...project,
-      renders: project.renders.map(r => r.id === renderId ? { ...r, status: 'rejected' } : r)
-    });
+  const handleCloseReviewDrawer = () => {
+    setIsReviewDrawerOpen(false);
+    setSelectedReviewRender(null);
+  };
+
+  const toggleRejectionReason = (reason: string) => {
+    if (feedbackRejections.includes(reason)) {
+      setFeedbackRejections(feedbackRejections.filter(r => r !== reason));
+    } else {
+      setFeedbackRejections([...feedbackRejections, reason]);
+    }
+  };
+
+  const handleSaveFeedback = async () => {
+    if (!selectedReviewRender) return;
+    
+    setIsSavingFeedback(true);
+    try {
+      const res = await fetch(`/api/renders/${selectedReviewRender.id}/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          approved: feedbackApproved,
+          rating: feedbackRating,
+          scores: feedbackScores,
+          action: feedbackAction,
+          rejectionReasons: feedbackApproved ? [] : feedbackRejections,
+          notes: feedbackNotes
+        })
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || 'Failed to save feedback');
+      }
+
+      setIsReviewDrawerOpen(false);
+      await fetchProjectData();
+    } catch (err: any) {
+      console.error('[Save Feedback Error]:', err.message);
+      alert(err.message || 'Failed to save render feedback.');
+    } finally {
+      setIsSavingFeedback(false);
+    }
   };
 
   const handleDeleteFile = async (fileId: string, fileKey: string) => {
@@ -574,12 +665,33 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                     {project.renders.map((render) => (
                       <div key={render.id} className="bg-slate-950 border border-slate-900 rounded-lg overflow-hidden flex flex-col">
                         <div className="relative aspect-video bg-slate-900">
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img 
-                            src={render.previewUrl} 
-                            alt={`Seed: ${render.seed}`} 
-                            className="object-cover w-full h-full"
-                          />
+                          {/* Side-by-side comparison grid */}
+                          <div className="grid grid-cols-2 h-full w-full relative">
+                            {/* Left: Input image */}
+                            <div className="relative border-r border-slate-900/60 overflow-hidden h-full">
+                              {render.baseDownloadUrl ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img 
+                                  src={render.baseDownloadUrl} 
+                                  alt="Original Input" 
+                                  className="object-cover w-full h-full"
+                                />
+                              ) : (
+                                <div className="flex items-center justify-center h-full text-slate-600 text-[10px]">No input file</div>
+                              )}
+                              <span className="absolute bottom-2 left-2 px-1.5 py-0.5 bg-slate-950/80 text-slate-400 text-[8px] font-bold rounded uppercase tracking-wider">Original Input</span>
+                            </div>
+                            {/* Right: Render variation output */}
+                            <div className="relative overflow-hidden h-full bg-slate-950">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img 
+                                src={render.previewUrl} 
+                                alt={`Seed: ${render.seed}`} 
+                                className="object-cover w-full h-full"
+                              />
+                              <span className="absolute bottom-2 right-2 px-1.5 py-0.5 bg-indigo-950/80 text-indigo-400 text-[8px] font-bold rounded uppercase tracking-wider">Render Output</span>
+                            </div>
+                          </div>
                           <div className="absolute top-2.5 right-2.5">
                             <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${render.status === 'approved' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/25' : render.status === 'rejected' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/25' : 'bg-slate-800 text-slate-450 border border-slate-700'}`}>
                               {render.status}
@@ -596,42 +708,21 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                             <p className="text-xs text-slate-500 mt-1">Style: {render.style}</p>
                           </div>
 
-                          {render.status === 'pending' ? (
-                            <div className="flex items-center gap-2 pt-2 border-t border-slate-900">
-                              <button
-                                onClick={() => handleApproveRender(render.id)}
-                                className="flex-1 inline-flex items-center justify-center space-x-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-xs font-semibold py-2 rounded border border-emerald-500/20 transition-colors"
-                              >
-                                <Check className="h-3.5 w-3.5" />
-                                <span>Approve</span>
-                              </button>
-                              <button
-                                onClick={() => handleRejectRender(render.id)}
-                                className="flex-1 inline-flex items-center justify-center space-x-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-xs font-semibold py-2 rounded border border-rose-500/20 transition-colors"
-                              >
-                                <X className="h-3.5 w-3.5" />
-                                <span>Reject</span>
-                              </button>
-                            </div>
-                          ) : (
-                            <div className="flex items-center justify-between pt-2 border-t border-slate-900 text-xs">
-                              <span className="text-slate-500 font-medium">Review Complete</span>
-                              <div className="flex items-center space-x-1">
-                                {[1, 2, 3, 4, 5].map((s) => (
-                                  <Star 
-                                    key={s} 
-                                    className={`h-3.5 w-3.5 ${s <= render.rating ? 'text-amber-400 fill-amber-400' : 'text-slate-700'}`} 
-                                  />
-                                ))}
-                              </div>
-                            </div>
-                          )}
+                          <div className="flex items-center gap-2 pt-2 border-t border-slate-900">
+                            <button
+                              onClick={() => handleOpenReviewDrawer(render)}
+                              className="flex-1 inline-flex items-center justify-center space-x-1.5 bg-indigo-600 hover:bg-indigo-500 text-slate-100 text-xs font-semibold py-2.5 rounded-lg transition-colors shadow-md"
+                            >
+                              <Sliders className="h-3.5 w-3.5" />
+                              <span>{render.status === 'pending' ? 'Review & Rate' : 'View Feedback'}</span>
+                            </button>
+                          </div>
                         </div>
                       </div>
                     ))}
                   </div>
                 )
-              )}
+              })}
             </div>
           </div>
         </div>
@@ -751,6 +842,210 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
 
       </div>
 
+      {/* Render Review Feedback Drawer */}
+      {isReviewDrawerOpen && selectedReviewRender && (
+        <div className="fixed inset-0 z-50 overflow-hidden">
+          <div className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm transition-opacity" onClick={handleCloseReviewDrawer} />
+          
+          <div className="absolute inset-y-0 right-0 max-w-full flex pl-10">
+            <div className="w-screen max-w-lg bg-slate-900 border-l border-slate-800 shadow-2xl flex flex-col">
+              {/* Drawer Header */}
+              <div className="px-6 py-5 border-b border-slate-800 bg-slate-950/40 flex items-center justify-between">
+                <div>
+                  <h2 className="text-base font-bold text-slate-200">Evaluate Render Output</h2>
+                  <p className="text-[10px] text-slate-550 mt-0.5 font-medium uppercase tracking-wider">Render ID: {selectedReviewRender.id}</p>
+                </div>
+                <button 
+                  onClick={handleCloseReviewDrawer}
+                  className="p-1.5 rounded-lg text-slate-450 hover:text-slate-200 hover:bg-slate-850 transition-colors"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              {/* Drawer Content */}
+              <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                {/* Comparison Previews */}
+                <div className="space-y-2">
+                  <h3 className="text-xs font-bold text-slate-455 uppercase tracking-wider">Comparison Grid</h3>
+                  <div className="grid grid-cols-2 gap-3 aspect-video bg-slate-950 border border-slate-850 rounded-xl overflow-hidden">
+                    {/* Left: Input */}
+                    <div className="relative border-r border-slate-900 overflow-hidden h-full">
+                      {selectedReviewRender.baseDownloadUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img 
+                          src={selectedReviewRender.baseDownloadUrl} 
+                          alt="Original Input" 
+                          className="object-cover w-full h-full"
+                        />
+                      ) : (
+                        <div className="flex items-center justify-center h-full text-slate-600 text-[10px] bg-slate-950">No input image</div>
+                      )}
+                      <span className="absolute bottom-2 left-2 px-1.5 py-0.5 bg-slate-950/80 text-slate-450 text-[8px] font-bold rounded uppercase tracking-wider">Original Input</span>
+                    </div>
+                    {/* Right: Output */}
+                    <div className="relative overflow-hidden h-full bg-slate-950">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img 
+                        src={selectedReviewRender.previewUrl} 
+                        alt="Render Output" 
+                        className="object-cover w-full h-full"
+                      />
+                      <span className="absolute bottom-2 right-2 px-1.5 py-0.5 bg-indigo-950/80 text-indigo-400 text-[8px] font-bold rounded uppercase tracking-wider">Render Variation</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Approve/Reject Action Toggles */}
+                <div className="bg-slate-950 border border-slate-850 rounded-xl p-4.5 space-y-4">
+                  <span className="block text-xs font-bold text-slate-350">Evaluation Result</span>
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setFeedbackApproved(true)}
+                      className={`flex-1 inline-flex items-center justify-center space-x-2 py-3 rounded-lg border text-sm font-semibold transition-all duration-200 ${feedbackApproved ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 shadow-lg shadow-emerald-500/5' : 'bg-slate-900/40 text-slate-400 border-slate-850 hover:bg-slate-850'}`}
+                    >
+                      <Check className="h-4.5 w-4.5" />
+                      <span>Approve Final</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFeedbackApproved(false)}
+                      className={`flex-1 inline-flex items-center justify-center space-x-2 py-3 rounded-lg border text-sm font-semibold transition-all duration-200 ${!feedbackApproved ? 'bg-rose-500/10 text-rose-455 border-rose-500/30 shadow-lg shadow-rose-500/5' : 'bg-slate-900/40 text-slate-400 border-slate-850 hover:bg-slate-850'}`}
+                    >
+                      <X className="h-4.5 w-4.5" />
+                      <span>Reject Render</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Sub-ratings Grid */}
+                <div className="bg-slate-950 border border-slate-850 rounded-xl p-4.5 space-y-4.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-300">Quality Ratings</span>
+                    <div className="flex items-center space-x-1.5 bg-slate-900 px-3 py-1 rounded-md border border-slate-850">
+                      <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">Overall:</span>
+                      <span className="text-xs font-bold text-indigo-400">{feedbackRating}/5</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {Object.entries({
+                      geometry: 'Geometry Detail',
+                      lighting: 'Lighting Quality',
+                      realism: 'Realism Factor',
+                      material: 'Material Texture',
+                      style: 'Style Accuracy',
+                      clientReady: 'Client Ready'
+                    }).map(([key, label]) => {
+                      const score = feedbackScores[key as keyof typeof feedbackScores] || 5;
+                      return (
+                        <div key={key} className="space-y-1.5">
+                          <span className="block text-[10.5px] font-semibold text-slate-400">{label}</span>
+                          <div className="flex items-center space-x-1">
+                            {[1, 2, 3, 4, 5].map((star) => (
+                              <button
+                                key={star}
+                                type="button"
+                                onClick={() => {
+                                  const newScores = { ...feedbackScores, [key]: star };
+                                  setFeedbackScores(newScores);
+                                  const avg = Math.round(
+                                    Object.values(newScores).reduce((a, b) => a + b, 0) / 6
+                                  );
+                                  setFeedbackRating(avg);
+                                }}
+                                className="focus:outline-none transition-colors"
+                              >
+                                <Star 
+                                  className={`h-4.5 w-4.5 ${star <= score ? 'text-amber-400 fill-amber-400 hover:text-amber-300' : 'text-slate-700 hover:text-slate-655'}`} 
+                                />
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Modification Requested Action */}
+                <div className="bg-slate-950 border border-slate-850 rounded-xl p-4.5 space-y-3.5">
+                  <label className="block text-xs font-bold text-slate-300">Render Directive Action</label>
+                  <select
+                    value={feedbackAction}
+                    onChange={(e) => setFeedbackAction(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-850 text-slate-200 text-xs rounded-lg px-3 py-2.5 focus:border-indigo-500 focus:outline-none font-medium"
+                  >
+                    <option value="none">None - Archive as Final Approve</option>
+                    <option value="regenerate similar">Regenerate Similar (New Seed)</option>
+                    <option value="request warmer">Request Warmer Temperature Tone</option>
+                    <option value="request cleaner">Request Cleaner Minimalist Details</option>
+                    <option value="reduce changes">Reduce Changes (Lower Denoise Strength)</option>
+                  </select>
+                </div>
+
+                {/* Rejection Reasons */}
+                {!feedbackApproved && (
+                  <div className="bg-slate-950 border border-slate-850 rounded-xl p-4.5 space-y-3.5">
+                    <span className="block text-xs font-bold text-slate-300">Reasons for Rejection</span>
+                    <div className="grid grid-cols-2 gap-2">
+                      {REJECTION_REASONS.map((reason) => {
+                        const isSelected = feedbackRejections.includes(reason);
+                        return (
+                          <button
+                            key={reason}
+                            type="button"
+                            onClick={() => toggleRejectionReason(reason)}
+                            className={`flex items-center space-x-2 p-2.5 rounded-lg border text-left text-[11px] font-medium transition-all ${isSelected ? 'bg-rose-500/10 text-rose-455 border-rose-500/25' : 'bg-slate-900/50 text-slate-450 border-slate-850 hover:bg-slate-855'}`}
+                          >
+                            <div className={`h-3.5 w-3.5 rounded border flex items-center justify-center shrink-0 ${isSelected ? 'bg-rose-500 border-rose-500 text-slate-100' : 'border-slate-700 bg-slate-950'}`}>
+                              {isSelected && <Check className="h-2.5 w-2.5 stroke-[3]" />}
+                            </div>
+                            <span className="truncate capitalize">{reason.replace('_', ' ')}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Comments / Notes */}
+                <div className="bg-slate-950 border border-slate-850 rounded-xl p-4.5 space-y-3.5">
+                  <label className="block text-xs font-bold text-slate-300">Custom Directive Notes</label>
+                  <textarea
+                    rows={4}
+                    value={feedbackNotes}
+                    onChange={(e) => setFeedbackNotes(e.target.value)}
+                    placeholder="Enter style comments, materials notes, or adjustments notes here..."
+                    className="w-full bg-slate-900 border border-slate-850 text-slate-300 text-xs rounded-lg p-3.5 focus:border-indigo-500 focus:outline-none placeholder-slate-600 font-medium leading-relaxed"
+                  />
+                </div>
+              </div>
+
+              {/* Drawer Save Action Footer */}
+              <div className="p-6 border-t border-slate-855 bg-slate-950/20 flex gap-3">
+                <button
+                  type="button"
+                  onClick={handleCloseReviewDrawer}
+                  className="flex-1 inline-flex items-center justify-center py-2.5 bg-slate-800 hover:bg-slate-750 text-slate-300 text-xs font-bold rounded-lg border border-slate-700 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveFeedback}
+                  disabled={isSavingFeedback}
+                  className="flex-1 inline-flex items-center justify-center py-2.5 bg-indigo-600 hover:bg-indigo-500 text-slate-100 text-xs font-bold rounded-lg transition-colors shadow-lg hover:shadow-indigo-500/20 disabled:opacity-50"
+                >
+                  {isSavingFeedback ? 'Saving Evaluated...' : 'Save Feedback'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      
       {/* Drawer component */}
       {isDrawerOpen && selectedJob && (
         <div className="fixed inset-0 z-50 overflow-hidden">

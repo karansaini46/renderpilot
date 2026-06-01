@@ -18,6 +18,9 @@ export async function GET(
         },
         renders: {
           orderBy: { createdAt: 'desc' },
+          include: {
+            feedback: true,
+          },
         },
         renderJobs: {
           orderBy: { createdAt: 'desc' },
