@@ -28,6 +28,10 @@ model Project {
   name             String
   userId           String?           @map("user_id")
   status           String            @default("active")
+  projectType      String?           @map("project_type")
+  sceneType        String?           @map("scene_type")
+  stylePreference  String?           @map("style_preference")
+  notes            String?
   createdAt        DateTime          @default(now()) @map("created_at")
   updatedAt        DateTime          @default(now()) @updatedAt @map("updated_at")
   user             User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
@@ -63,6 +67,11 @@ model Worker {
   ipAddress     String?     @map("ip_address")
   hostname      String?
   lastHeartbeat DateTime?   @map("last_heartbeat")
+  lastSeenAt    DateTime?   @map("last_seen_at")
+  currentJobId  String?     @map("current_job_id")
+  gpuName       String?     @map("gpu_name")
+  vramGb        Int?        @map("vram_gb")
+  mode          String?     @map("mode")
   settingsJson  String?     @default("{}") @map("settings_json")
   createdAt     DateTime    @default(now()) @map("created_at")
   renderJobs    RenderJob[]

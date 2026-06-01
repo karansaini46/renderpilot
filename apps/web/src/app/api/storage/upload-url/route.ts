@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { buildProjectS3Key, createPresignedUploadUrl } from '../../../../lib/storage';
+import { buildProjectS3Key } from '../../../../lib/storage';
+import { getStorageAdapter } from '../../../../lib/storage-adapter';
 
 export async function POST(request: Request) {
   try {
@@ -37,19 +38,21 @@ export async function POST(request: Request) {
       );
     }
 
-    // Generate the presigned PUT URL
-    const uploadUrl = await createPresignedUploadUrl(key, contentType);
+    // Generate target using the dynamic adapter
+    const adapter = getStorageAdapter();
+    const target = await adapter.createUploadTarget(key, contentType);
 
     return NextResponse.json({
-      url: uploadUrl,
+      url: target.url,
+      method: target.method,
       key: key
     }, { status: 200 });
 
   } catch (error: any) {
     // Return a generic error message to the client, preventing leak of S3 internal details/credentials
-    console.error('[Upload API Error] Failed to generate upload URL:', error.message);
+    console.error('[Upload API Error] Failed to generate upload target:', error.message);
     return NextResponse.json(
-      { error: 'Internal server error occurred while generating upload URL' },
+      { error: 'Internal server error occurred while generating upload target' },
       { status: 500 }
     );
   }
