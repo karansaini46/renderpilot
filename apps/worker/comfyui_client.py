@@ -252,6 +252,34 @@ class ComfyUIClient:
 
         return workflow
 
+    def upload_image(self, local_path: str) -> str:
+        """
+        Uploads a local image file to ComfyUI's input directory.
+
+        Args:
+            local_path: Absolute path to the local image file.
+
+        Returns:
+            The filename of the uploaded image inside ComfyUI's input directory.
+        """
+        if not os.path.exists(local_path):
+            raise FileNotFoundError(f"Local image file not found: {local_path}")
+
+        try:
+            with open(local_path, 'rb') as f:
+                filename = os.path.basename(local_path)
+                files = {'image': (filename, f, 'image/png')}
+                resp = requests.post(
+                    f"{self.base_url}/upload/image",
+                    files=files,
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return data['name']
+        except Exception as e:
+            raise ComfyUIConnectionError(f"Failed to upload image to ComfyUI: {e}")
+
     # ------------------------------------------------------------------
     # Workflow submission and execution
     # ------------------------------------------------------------------

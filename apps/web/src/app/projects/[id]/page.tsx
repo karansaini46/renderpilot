@@ -105,7 +105,6 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
       const res = await fetch(`/api/projects/${id}`);
       if (res.ok) {
         const data: Project = await res.json();
-        setProject(data);
         setJobs(data.renderJobs || []);
         
         // Resolve download URLs for all project files
@@ -124,6 +123,39 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
           })
         );
         setFilesList(resolvedFiles);
+
+        // Resolve download URLs for all renders to populate previewUrl
+        const resolvedRenders = await Promise.all(
+          (data.renders || []).map(async (render: any) => {
+            try {
+              const urlRes = await fetch(`/api/storage/download-url?key=${encodeURIComponent(render.finalImageUrl)}`);
+              if (urlRes.ok) {
+                const urlData = await urlRes.json();
+                return {
+                  ...render,
+                  previewUrl: urlData.url,
+                  status: render.status || 'pending',
+                  style: render.styleId ? render.styleId.replace('style_', '').replace(/_/g, ' ') : 'Custom Style',
+                  rating: render.rating || 0
+                };
+              }
+            } catch (err) {
+              console.error('Failed to get download URL for render:', err);
+            }
+            return {
+              ...render,
+              previewUrl: render.finalImageUrl,
+              status: 'pending',
+              style: 'Custom Style',
+              rating: 0
+            };
+          })
+        );
+
+        setProject({
+          ...data,
+          renders: resolvedRenders
+        });
       }
     } catch (err) {
       console.error('Failed to load project details:', err);

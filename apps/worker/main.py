@@ -11,6 +11,8 @@ import psycopg2
 import json
 from config import config
 from capacity import load_profile, downshift_job_settings, requires_review, LAPTOP_PROFILE
+from storage import downloadFileToWorker, uploadFileFromWorker
+from comfyui_client import ComfyUIClient, ComfyUIConnectionError, ComfyUIExecutionError
 
 # Control flag for grace shutdown handling
 running = True
@@ -267,39 +269,215 @@ def process_job(conn, job):
             VALUES (%s, %s, 'processing', 'Render job processing initiated by laptop worker.', '{}', %s);
         """, (event_id, job_id, datetime.datetime.now(datetime.timezone.utc)))
         conn.commit()
+
+        # 1. Fetch user_id of the project
+        cur.execute("SELECT user_id FROM projects WHERE id = %s LIMIT 1;", (project_id,))
+        user_row = cur.fetchone()
+        user_id = user_row[0] if user_row and user_row[0] else "default-user"
+
+        # 2. Fetch the latest input reference image from project_files
+        cur.execute("""
+            SELECT file_url FROM project_files 
+            WHERE project_id = %s AND file_type LIKE 'image/%'
+            ORDER BY created_at DESC 
+            LIMIT 1;
+        """, (project_id,))
+        file_row = cur.fetchone()
+        if not file_row:
+            # Fall back to any file type if no specific image type is marked
+            cur.execute("""
+                SELECT file_url FROM project_files 
+                WHERE project_id = %s 
+                ORDER BY created_at DESC 
+                LIMIT 1;
+            """, (project_id,))
+            file_row = cur.fetchone()
+            
+        if not file_row:
+            raise ValueError(f"No input reference image found for project: {project_id}")
+            
+        file_url = file_row[0]
+
+        # 3. Retrieve style preference template
+        style_id = None
+        style_pref = clamped_settings.get("stylePreference")
+        prompt_text = clamped_settings.get("prompt")
+        negative_prompt_text = clamped_settings.get("negativePrompt") or clamped_settings.get("negative_prompt", "")
         
-        # Simulate rendering chunks
-        for progress in [20, 40, 60, 80]:
+        if not prompt_text:
+            prompt_text = "high quality architectural rendering, photorealistic, natural lighting, detailed materials"
+            
+        if style_pref:
+            cur.execute("""
+                SELECT id, prompt_template, negative_prompt 
+                FROM styles 
+                WHERE name = %s OR id = %s 
+                LIMIT 1;
+            """, (style_pref, style_pref))
+            style_row = cur.fetchone()
+            if style_row:
+                style_id, prompt_template, style_neg = style_row
+                if not clamped_settings.get("prompt"):
+                    prompt_text = prompt_template
+                if not negative_prompt_text and style_neg:
+                    negative_prompt_text = style_neg
+
+        # 4. Create local job workspace
+        workspace_dir = os.path.join(config.LOCAL_WORKSPACE_ROOT, "jobs", job_id)
+        os.makedirs(workspace_dir, exist_ok=True)
+
+        # 5. Download the input reference image from object storage
+        local_input_filename = f"input_{os.path.basename(file_url)}"
+        local_input_path = os.path.join(workspace_dir, local_input_filename)
+        
+        print(f"[{datetime.datetime.now().strftime('%T')}] Downloading input image from S3: {file_url} -> {local_input_path}")
+        downloadFileToWorker(file_url, local_input_path)
+
+        # 6. Read image dimensions to cap them safely
+        width = 768
+        height = 768
+        try:
+            from PIL import Image
+            with Image.open(local_input_path) as img:
+                orig_width, orig_height = img.size
+                width, height = orig_width, orig_height
+        except Exception as img_err:
+            print(f"Failed to read image dimensions: {img_err}. Using 768px default limit.", file=sys.stderr)
+
+        # Clamp dimensions preserving aspect ratio to fit within capacity limit
+        max_res = capacity_profile.get("max_preview_resolution", 768)
+        if width > max_res or height > max_res:
+            if width >= height:
+                height = int(height * (max_res / width))
+                width = max_res
+            else:
+                width = int(width * (max_res / height))
+                height = max_res
+
+        # Ensure dimensions are multiples of 8 (standard Latent VAE constraint)
+        width = (width // 8) * 8
+        height = (height // 8) * 8
+
+        # 7. Initialize ComfyUI client and upload input image
+        print(f"[{datetime.datetime.now().strftime('%T')}] Initializing ComfyUI client at {config.COMFYUI_URL}...")
+        comfy_client = ComfyUIClient(config.COMFYUI_URL)
+        comfy_client.check_health()
+        
+        print(f"[{datetime.datetime.now().strftime('%T')}] Uploading input image to ComfyUI...")
+        comfyui_input_name = comfy_client.upload_image(local_input_path)
+
+        # 8. Render variations sequentially
+        variations = clamped_settings.get("variations", 2)
+        if not variations or variations <= 0:
+            variations = 2
+            
+        max_vars = capacity_profile.get("max_variations_per_job", 4)
+        if variations > max_vars:
+            variations = max_vars
+            
+        steps = clamped_settings.get("steps", 20)
+        cfg_scale = clamped_settings.get("cfg_scale", 7.0)
+        denoise = clamped_settings.get("denoise", 0.65)
+        
+        print(f"[{datetime.datetime.now().strftime('%T')}] Launching sequential variation loops ({variations} total)...")
+        
+        for idx in range(variations):
             if not running:
                 raise KeyboardInterrupt("Termination signal received during rendering")
                 
-            time.sleep(1.5)
-            print(f"[{datetime.datetime.now().strftime('%T')}] Render progress updated to: {progress}%")
+            variation_progress_start = int((idx / variations) * 90)
+            variation_progress_end = int(((idx + 1) / variations) * 90)
             
+            def on_comfyui_progress(current, total):
+                if total > 0:
+                    prog_percent = variation_progress_start + int((current / total) * (variation_progress_end - variation_progress_start))
+                    prog_percent = min(max(prog_percent, 0), 99)
+                    
+                    cur_prog = conn.cursor()
+                    try:
+                        cur_prog.execute("UPDATE render_jobs SET progress = %s WHERE id = %s;", (prog_percent, job_id))
+                        conn.commit()
+                    except Exception:
+                        conn.rollback()
+                    finally:
+                        cur_prog.close()
+
+            v_seed = clamped_settings.get("seed", random.randint(1, 1000000000)) + idx
+            print(f"[{datetime.datetime.now().strftime('%T')}] Rendering variation {idx + 1}/{variations} with seed {v_seed}")
+            
+            output_paths = comfy_client.render(
+                template_name="img2img_default",
+                input_image=comfyui_input_name,
+                prompt=prompt_text,
+                negative_prompt=negative_prompt_text,
+                seed=v_seed,
+                output_folder=f"RenderPilot_{job_id}_var_{idx}",
+                width=width,
+                height=height,
+                steps=steps,
+                cfg_scale=cfg_scale,
+                denoise=denoise,
+                on_progress=on_comfyui_progress
+            )
+            
+            if not output_paths:
+                raise ComfyUIExecutionError(f"No output image returned from ComfyUI for variation {idx}")
+                
+            comfyui_output_path = output_paths[0]
+            local_output_filename = f"output_var_{idx}.png"
+            local_output_path = os.path.join(workspace_dir, local_output_filename)
+            
+            # Download completed render image
+            filename_only = os.path.basename(comfyui_output_path)
+            print(f"[{datetime.datetime.now().strftime('%T')}] Fetching variation output from ComfyUI API: {filename_only}")
+            output_bytes = comfy_client.download_output(filename_only)
+            
+            with open(local_output_path, 'wb') as f_out:
+                f_out.write(output_bytes)
+                
+            # Upload render output to object storage
+            timestamp_sec = int(time.time())
+            s3_output_key = f"users/{user_id}/projects/{project_id}/outputs/render_{job_id}_var_{idx}_{timestamp_sec}.png"
+            
+            print(f"[{datetime.datetime.now().strftime('%T')}] Uploading variation {idx + 1} to S3: {s3_output_key}")
+            uploadFileFromWorker(local_output_path, s3_output_key)
+            
+            # Save render metadata row in Neon
+            render_id = f"render_{int(time.time() * 1000)}_{random.randint(0, 999)}"
             cur.execute("""
-                UPDATE render_jobs
-                SET progress = %s
-                WHERE id = %s;
-            """, (progress, job_id))
+                INSERT INTO renders (
+                    id, job_id, project_id, base_image_url, final_image_url, 
+                    style_id, prompt, negative_prompt, seed, settings_json, created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+            """, (
+                render_id,
+                job_id,
+                project_id,
+                file_url,
+                s3_output_key,
+                style_id,
+                prompt_text,
+                negative_prompt_text,
+                v_seed,
+                json.dumps(clamped_settings),
+                datetime.datetime.now(datetime.timezone.utc)
+            ))
             
+            # Log transition event log
             event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
             cur.execute("""
                 INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
                 VALUES (%s, %s, 'processing', %s, '{}', %s);
-            """, (event_id, job_id, f"Render execution details: {progress}% completed.", datetime.datetime.now(datetime.timezone.utc)))
+            """, (
+                event_id, 
+                job_id, 
+                f"Variation {idx + 1}/{variations} completed and uploaded successfully.", 
+                datetime.datetime.now(datetime.timezone.utc)
+            ))
             conn.commit()
-            
-        # Completion outputs registration
-        time.sleep(1.5)
-        print(f"[{datetime.datetime.now().strftime('%T')}] Render execution completed. Registering outputs...")
-        
-        render_id = f"render_{int(time.time() * 1000)}_{random.randint(0, 999)}"
-        mock_final_image = "https://images.unsplash.com/photo-1600585154340-be6161a56a0c"
-        cur.execute("""
-            INSERT INTO renders (id, job_id, project_id, final_image_url, prompt, negative_prompt, seed, settings_json, created_at)
-            VALUES (%s, %s, %s, %s, 'High-resolution architectural visual rendering pass', '', 424242, '{}', %s);
-        """, (render_id, job_id, project_id, mock_final_image, datetime.datetime.now(datetime.timezone.utc)))
-        
+
+        # Update final job state as completed
         cur.execute("""
             UPDATE render_jobs
             SET status = 'completed', progress = 100, completed_at = %s
@@ -309,7 +487,7 @@ def process_job(conn, job):
         event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
         cur.execute("""
             INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
-            VALUES (%s, %s, 'completed', 'Render outputs saved and job execution complete.', '{}', %s);
+            VALUES (%s, %s, 'completed', 'Render variations execution completed. All outputs registered.', '{}', %s);
         """, (event_id, job_id, datetime.datetime.now(datetime.timezone.utc)))
         conn.commit()
         
@@ -317,7 +495,6 @@ def process_job(conn, job):
         conn.rollback()
         print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} encountered execution error: {e}", file=sys.stderr)
         
-        # Log failure updates safely
         try:
             cur.execute("""
                 UPDATE render_jobs
