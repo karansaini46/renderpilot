@@ -94,6 +94,23 @@ export async function POST(
       }
     }
 
+    // 5. Training sample candidates: add if approved with sufficient score, remove if rejected
+    if (approved && rating !== undefined && Number(rating) >= 4) {
+      try {
+        await createTrainingSampleCandidate(render, Number(rating));
+      } catch (trainErr: any) {
+        console.error('[Training Sample Candidate Creation Error]:', trainErr.message);
+      }
+    } else if (!approved) {
+      try {
+        await prisma.trainingSample.deleteMany({
+          where: { renderId: render.id }
+        });
+      } catch (err: any) {
+        console.error('[Training Sample Delete Error]:', err.message);
+      }
+    }
+
     return NextResponse.json(feedback, { status: 200 });
 
   } catch (error: any) {
@@ -203,3 +220,70 @@ async function upsertPreferenceMemory(
     });
   }
 }
+
+/**
+ * Creates a training_samples row when a render is approved with a high rating (>= 4 stars).
+ */
+async function createTrainingSampleCandidate(render: any, rating: number) {
+  // Determine styleId
+  let targetStyleId = render.styleId;
+  
+  if (!targetStyleId) {
+    // Attempt to match project style preference to a seeded style
+    const stylePref = render.project?.stylePreference || '';
+    const style = await prisma.style.findFirst({
+      where: {
+        name: {
+          contains: stylePref,
+          mode: 'insensitive'
+        }
+      }
+    });
+    if (style) {
+      targetStyleId = style.id;
+    } else {
+      // Use fallback seeded style if none found
+      targetStyleId = 'style_mod_lux_ext';
+    }
+  }
+
+  // Ensure that the Style row exists in DB before inserting relation
+  const styleExists = await prisma.style.findUnique({
+    where: { id: targetStyleId }
+  });
+  if (!styleExists) {
+    // Fallback to first active style or style_mod_lux_ext if target style is not found in DB
+    const firstStyle = await prisma.style.findFirst({ where: { active: true } });
+    targetStyleId = firstStyle?.id || 'style_mod_lux_ext';
+  }
+
+  // Generate placeholder caption
+  // Format the style name cleanly from the style ID
+  const styleCleanName = targetStyleId.replace('style_', '').replace(/_/g, ' ');
+  const cleanSceneType = render.project?.sceneType || 'space';
+  const captionPlaceholder = `A high-quality architectural rendering of a ${cleanSceneType} in ${styleCleanName} style.`;
+
+  // Upsert to avoid duplicate candidates for the same render
+  const sampleId = `ts_${render.id}`;
+  
+  await prisma.trainingSample.upsert({
+    where: { id: sampleId },
+    update: {
+      qualityScore: rating,
+      sceneType: render.project?.sceneType || 'general',
+      imageUrl: render.finalImageUrl,
+    },
+    create: {
+      id: sampleId,
+      renderId: render.id,
+      styleId: targetStyleId,
+      imageUrl: render.finalImageUrl,
+      caption: captionPlaceholder,
+      qualityScore: rating,
+      sceneType: render.project?.sceneType || 'general',
+      datasetSplit: 'train',
+      approvedForTraining: false,
+    }
+  });
+}
+

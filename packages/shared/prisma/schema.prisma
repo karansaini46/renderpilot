@@ -204,6 +204,8 @@ model TrainingSample {
   imageUrl            String   @map("image_url")
   caption             String?
   qualityScore        Float?   @map("quality_score")
+  sceneType           String?  @map("scene_type")
+  datasetSplit        String?  @default("train") @map("dataset_split")
   approvedForTraining Boolean  @default(false) @map("approved_for_training")
   createdAt           DateTime @default(now()) @map("created_at")
   render              Render   @relation(fields: [renderId], references: [id], onDelete: Cascade)
