@@ -38,6 +38,9 @@ interface Render {
   rating: number;
   previewUrl: string;
   createdAt: string;
+  baseDownloadUrl?: string;
+  feedbackDetails?: Record<string, any>;
+  feedbackNotes?: string;
 }
 
 interface RenderJob {
@@ -86,6 +89,24 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
   const [isLoadingEvents, setIsLoadingEvents] = useState(false);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isWorkerOnline, setIsWorkerOnline] = useState(false);
+
+  // Review drawer state
+  const [isReviewDrawerOpen, setIsReviewDrawerOpen] = useState(false);
+  const [selectedReviewRender, setSelectedReviewRender] = useState<any>(null);
+  const [feedbackApproved, setFeedbackApproved] = useState(true);
+  const [feedbackRating, setFeedbackRating] = useState(5);
+  const [feedbackScores, setFeedbackScores] = useState<Record<string, number>>({
+    geometry: 5,
+    lighting: 5,
+    realism: 5,
+    material: 5,
+    style: 5,
+    clientReady: 5
+  });
+  const [feedbackAction, setFeedbackAction] = useState('regenerate similar');
+  const [feedbackRejections, setFeedbackRejections] = useState<string[]>([]);
+  const [feedbackNotes, setFeedbackNotes] = useState('');
+  const [isSavingFeedback, setIsSavingFeedback] = useState(false);
 
   const checkWorkerAvailability = async () => {
     try {
@@ -722,7 +743,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                     ))}
                   </div>
                 )
-              })}
+              )}
             </div>
           </div>
         </div>
