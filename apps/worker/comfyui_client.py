@@ -245,6 +245,22 @@ class ComfyUIClient:
                 if 'image' in inputs:
                     inputs['image'] = input_image
 
+            # CheckpointLoaderSimple — select model name
+            if class_type == 'CheckpointLoaderSimple':
+                if 'ckpt_name' in inputs:
+                    current_model = inputs['ckpt_name']
+                    try:
+                        resp = requests.get(f"{self.base_url}/object_info/CheckpointLoaderSimple", timeout=3)
+                        if resp.ok:
+                            models = resp.json().get('CheckpointLoaderSimple', {}).get('input', {}).get('required', {}).get('ckpt_name', [])[0]
+                            if models:
+                                if current_model not in models:
+                                    fallback = models[0]
+                                    print(f"[{self.base_url}] Model '{current_model}' not found in ComfyUI list. Fallback to '{fallback}'.", file=sys.stderr)
+                                    inputs['ckpt_name'] = fallback
+                    except Exception as e:
+                        print(f"[{self.base_url}] Warning: Failed to query available models: {e}", file=sys.stderr)
+
             # Save Image / Preview Image — inject output prefix
             if class_type in ('SaveImage', 'PreviewImage'):
                 if 'filename_prefix' in inputs and output_folder:
