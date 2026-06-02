@@ -34,6 +34,8 @@ export async function GET(request: Request) {
 
 /**
  * POST: Queues a new rendering job for a project, validating that an input file exists.
+ * Before creating the job, queries preference_memory for the best matching settings
+ * from previously approved renders and merges them into the job settings.
  */
 export async function POST(request: Request) {
   try {
@@ -79,8 +81,33 @@ export async function POST(request: Request) {
       );
     }
 
+    // Parse the incoming user settings
+    let userSettings: Record<string, any> = {};
+    try {
+      userSettings = JSON.parse(settingsJson || '{}');
+    } catch {
+      userSettings = {};
+    }
+
+    // Query preference memory for the best matching settings from past approvals
+    let memoryApplied = false;
+    let memorySource = '';
+    try {
+      const memorySettings = await findBestMemoryMatch(project);
+      if (memorySettings) {
+        // Merge memory values as defaults — user-explicit settings always take priority
+        const mergedSettings = { ...memorySettings, ...userSettings };
+        userSettings = mergedSettings;
+        memoryApplied = true;
+        memorySource = memorySettings._memory_scope || '';
+      }
+    } catch (memoryErr: any) {
+      // Memory lookup is non-blocking — log but don't fail job creation
+      console.error('[Preference Memory Lookup Error]:', memoryErr.message);
+    }
+
     const jobId = `job_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-    const jobSettings = settingsJson || '{}';
+    const jobSettings = JSON.stringify(userSettings);
 
     // Create the job and its initial event log record inside a transaction
     const newJob = await prisma.$transaction(async (tx) => {
@@ -94,6 +121,7 @@ export async function POST(request: Request) {
         }
       });
 
+      // Log the standard queued event
       await tx.jobEvent.create({
         data: {
           id: `event_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
@@ -103,6 +131,19 @@ export async function POST(request: Request) {
           detailsJson: jobSettings,
         }
       });
+
+      // If memory settings were applied, log an additional event for traceability
+      if (memoryApplied) {
+        await tx.jobEvent.create({
+          data: {
+            id: `event_${Date.now()}_${Math.floor(Math.random() * 1000 + 1)}`,
+            jobId: jobId,
+            eventType: 'memory_applied',
+            message: `Preference memory applied from scope: ${memorySource}. Settings merged from previously approved renders.`,
+            detailsJson: JSON.stringify({ memoryScope: memorySource }),
+          }
+        });
+      }
 
       return createdJob;
     });
@@ -116,4 +157,70 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   }
+}
+
+/**
+ * Queries the preference_memory table for the best matching settings for this project.
+ * Uses a tiered scope matching strategy:
+ *   1. Exact: project_type:scene_type:style_preference
+ *   2. Partial: project_type:scene_type:*
+ *   3. Broad: project_type:*:*
+ * Returns the highest-scored match, or null if no memory exists.
+ */
+async function findBestMemoryMatch(
+  project: { projectType: string | null; sceneType: string | null; stylePreference: string | null }
+): Promise<Record<string, any> | null> {
+  const projectType = (project.projectType || 'general').toLowerCase().trim();
+  const sceneType = (project.sceneType || 'general').toLowerCase().trim();
+  const stylePref = (project.stylePreference || 'default').toLowerCase().trim();
+
+  const memoryKey = 'render_settings';
+
+  // Tiered scope matching — try most specific first, then broaden
+  const scopeCandidates = [
+    `${projectType}:${sceneType}:${stylePref}`,
+    `${projectType}:${sceneType}`,
+    `${projectType}`,
+  ];
+
+  for (const scopePrefix of scopeCandidates) {
+    const match = await prisma.preferenceMemory.findFirst({
+      where: {
+        key: memoryKey,
+        scope: { startsWith: scopePrefix },
+      },
+      orderBy: { score: 'desc' },
+    });
+
+    if (match) {
+      let memoryValue: Record<string, any> = {};
+      try {
+        memoryValue = JSON.parse(match.valueJson || '{}');
+      } catch {
+        continue;
+      }
+
+      // Extract render-relevant settings only (exclude metadata fields)
+      const renderSettings: Record<string, any> = {};
+
+      if (memoryValue.prompt) renderSettings.prompt = memoryValue.prompt;
+      if (memoryValue.negative_prompt) renderSettings.negativePrompt = memoryValue.negative_prompt;
+      if (memoryValue.steps) renderSettings.steps = memoryValue.steps;
+      if (memoryValue.cfg_scale) renderSettings.cfg_scale = memoryValue.cfg_scale;
+      if (memoryValue.denoise !== undefined) renderSettings.denoise = memoryValue.denoise;
+      if (memoryValue.seed) renderSettings.seed = memoryValue.seed;
+      if (memoryValue.style_id) renderSettings.stylePreference = memoryValue.style_id;
+      if (memoryValue.geometry_lock_mode) renderSettings.geometryLockMode = memoryValue.geometry_lock_mode;
+      if (memoryValue.material_choices?.length) renderSettings.materialChoices = memoryValue.material_choices;
+
+      // Tag with the memory scope for traceability in job events
+      renderSettings._memory_scope = match.scope;
+      renderSettings._memory_score = match.score;
+      renderSettings._memory_source_render = match.sourceRenderId;
+
+      return renderSettings;
+    }
+  }
+
+  return null;
 }
