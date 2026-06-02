@@ -18,8 +18,10 @@ import {
   Image as ImageIcon,
   CheckCircle2,
   XCircle,
-  Star
+  Star,
+  Sparkles
 } from 'lucide-react';
+import { STYLE_PRESETS } from '../../../lib/style-presets';
 
 interface ProjectFile {
   id: string;
@@ -107,6 +109,13 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
   const [feedbackRejections, setFeedbackRejections] = useState<string[]>([]);
   const [feedbackNotes, setFeedbackNotes] = useState('');
   const [isSavingFeedback, setIsSavingFeedback] = useState(false);
+
+  // Launch Modal State
+  const [isLaunchModalOpen, setIsLaunchModalOpen] = useState(false);
+  const [selectedStylePreset, setSelectedStylePreset] = useState('style_mod_lux_ext');
+  const [selectedSceneType, setSelectedSceneType] = useState('Exterior');
+  const [selectedProjectType, setSelectedProjectType] = useState('Residential');
+  const [selectedMaterials, setSelectedMaterials] = useState<string[]>([]);
 
   const checkWorkerAvailability = async () => {
     try {
@@ -260,12 +269,27 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
     return () => clearInterval(interval);
   }, [jobs, isDrawerOpen, selectedJob]);
 
-  const handleLaunchRender = async () => {
+  const openLaunchModal = () => {
     if (!project) return;
     if (filesList.length === 0) {
       alert('Cannot launch render job. Please upload at least one image input file first.');
       return;
     }
+    
+    // Pre-populate settings from project metadata
+    const matchingPreset = STYLE_PRESETS.find(
+      s => s.id === project.stylePreference || s.name.toLowerCase() === (project.stylePreference || '').toLowerCase()
+    );
+    
+    setSelectedStylePreset(matchingPreset?.id || 'style_mod_lux_ext');
+    setSelectedSceneType(project.sceneType || 'Exterior');
+    setSelectedProjectType(project.projectType || 'Residential');
+    setSelectedMaterials([]);
+    setIsLaunchModalOpen(true);
+  };
+
+  const handleLaunchRenderConfirm = async () => {
+    if (!project) return;
     
     setIsLaunchingJob(true);
     try {
@@ -275,9 +299,10 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
         body: JSON.stringify({
           projectId: id,
           settingsJson: JSON.stringify({
-            stylePreference: project.stylePreference,
-            sceneType: project.sceneType,
-            projectType: project.projectType
+            styleId: selectedStylePreset,
+            sceneType: selectedSceneType,
+            projectType: selectedProjectType,
+            materialChoices: selectedMaterials
           })
         })
       });
@@ -287,6 +312,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
         throw new Error(errorData.error || 'Failed to queue render job');
       }
 
+      setIsLaunchModalOpen(false);
       await fetchProjectData();
     } catch (err: any) {
       console.error('[Launch Job Error]:', err.message);
@@ -538,7 +564,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
             <p className="text-slate-400 text-sm mt-0.5">Style Preference: {project.stylePreference}</p>
           </div>
           <button
-            onClick={handleLaunchRender}
+            onClick={openLaunchModal}
             disabled={isLaunchingJob}
             className="inline-flex items-center space-x-2 bg-indigo-600 hover:bg-indigo-500 text-slate-100 text-sm font-semibold px-4.5 py-2.5 rounded-lg shadow-lg hover:shadow-indigo-500/20 transform transition-all duration-200 active:scale-95 w-fit disabled:opacity-50 disabled:cursor-not-allowed"
           >
@@ -1200,6 +1226,179 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                   </button>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 4. Simplified Launch Render Preset Engine Modal */}
+      {isLaunchModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          {/* Backdrop blur overlay */}
+          <div 
+            className="absolute inset-0 bg-black/75 backdrop-blur-sm"
+            onClick={() => setIsLaunchModalOpen(false)}
+          />
+
+          <div className="relative w-full max-w-4xl bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl animate-in fade-in zoom-in duration-200 text-slate-100">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-5 border-b border-slate-800 bg-slate-950/40">
+              <div className="flex items-center space-x-2.5">
+                <Sparkles className="h-5 w-5 text-indigo-400 animate-pulse" />
+                <h2 className="text-lg font-extrabold tracking-wider bg-gradient-to-r from-white to-slate-300 bg-clip-text text-transparent">
+                  Launch Architectural Render Job
+                </h2>
+              </div>
+              <button 
+                onClick={() => setIsLaunchModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-100 hover:bg-slate-850 rounded transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto max-h-[80vh] space-y-6">
+              {/* Step 1: Select Style Preset Cards */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-3">
+                  1. Select Visual Preset Style
+                </label>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {STYLE_PRESETS.map((style) => {
+                    const isSelected = selectedStylePreset === style.id;
+                    return (
+                      <div
+                        key={style.id}
+                        onClick={() => setSelectedStylePreset(style.id)}
+                        className={`flex flex-col p-4 rounded-xl border cursor-pointer text-left transition-all duration-200 select-none group ${
+                          isSelected 
+                            ? 'bg-indigo-600/10 border-indigo-500/80 shadow-[0_0_15px_rgba(99,102,241,0.1)]' 
+                            : 'bg-slate-950/40 border-slate-850 hover:border-slate-800 hover:bg-slate-900/40'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3 mb-1.5">
+                          <h4 className={`text-xs font-bold transition-colors ${isSelected ? 'text-indigo-400' : 'text-slate-200 group-hover:text-slate-100'}`}>
+                            {style.name}
+                          </h4>
+                          {isSelected && (
+                            <span className="p-0.5 rounded-full bg-indigo-500 text-slate-950 flex items-center justify-center shrink-0">
+                              <Check className="h-3 w-3" />
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-slate-450 leading-relaxed mb-3 flex-1 font-medium">
+                          {style.description}
+                        </p>
+                        
+                        <div className="flex items-center justify-between mt-auto pt-2 border-t border-slate-900/60">
+                          <span className="text-[8px] font-bold text-slate-500 uppercase tracking-wider">
+                            Geometry
+                          </span>
+                          <span className={`px-1.5 py-0.5 rounded text-[8px] font-extrabold uppercase tracking-wider ${
+                            style.defaultGeometryLockMode === 'locked' 
+                              ? 'bg-indigo-950/80 text-indigo-400 border border-indigo-500/20' 
+                              : 'bg-slate-900 text-slate-400 border border-slate-800'
+                          }`}>
+                            {style.defaultGeometryLockMode}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Step 2: Dropdowns for Simple Metadata options */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">
+                    2. Scene Type Environment
+                  </label>
+                  <select
+                    value={selectedSceneType}
+                    onChange={(e) => setSelectedSceneType(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-850 text-xs text-slate-205 p-2.5 rounded-lg focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="Exterior">Exterior Perspective</option>
+                    <option value="Interior">Interior Perspective</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">
+                    3. Project Typology
+                  </label>
+                  <select
+                    value={selectedProjectType}
+                    onChange={(e) => setSelectedProjectType(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-850 text-xs text-slate-205 p-2.5 rounded-lg focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="Residential">Residential</option>
+                    <option value="Commercial">Commercial</option>
+                    <option value="Industrial">Industrial</option>
+                    <option value="Landscape">Landscape / Urban</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Step 3: Click-to-select Material Vibe tags */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2.5">
+                  4. Add Material Accent Vibes
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {['Glass & Steel', 'Concrete Minimalism', 'Warm Oak Wood', 'Brushed Brass', 'Travertine Stone', 'Polished Terrazzo', 'Exposed Brick', 'Matte Black Metal'].map((mat) => {
+                    const isSelected = selectedMaterials.includes(mat);
+                    return (
+                      <button
+                        key={mat}
+                        type="button"
+                        onClick={() => {
+                          if (isSelected) {
+                            setSelectedMaterials(selectedMaterials.filter(m => m !== mat));
+                          } else {
+                            setSelectedMaterials([...selectedMaterials, mat]);
+                          }
+                        }}
+                        className={`px-3 py-1.5 rounded-lg text-[10px] font-bold border transition-all duration-150 uppercase tracking-wider ${
+                          isSelected 
+                            ? 'bg-indigo-600/10 text-indigo-400 border-indigo-500/30' 
+                            : 'bg-slate-950/40 text-slate-400 border-slate-850 hover:text-slate-350 hover:border-slate-750'
+                        }`}
+                      >
+                        {mat}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Actions Footer */}
+            <div className="flex items-center justify-end space-x-3 px-6 py-4 border-t border-slate-850 bg-slate-950/30 mt-auto">
+              <button
+                onClick={() => setIsLaunchModalOpen(false)}
+                className="px-4 py-2.5 rounded-lg text-slate-400 hover:text-slate-100 font-semibold text-xs uppercase tracking-wider transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleLaunchRenderConfirm}
+                disabled={isLaunchingJob}
+                className="inline-flex items-center space-x-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-5 py-2.5 rounded-lg shadow-lg hover:shadow-indigo-500/10 transition-colors uppercase tracking-wider disabled:opacity-60"
+              >
+                {isLaunchingJob ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <span>Queueing Job...</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-3.5 w-3.5" />
+                    <span>Queue Render Job</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>

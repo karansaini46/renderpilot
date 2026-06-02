@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '../../../lib/db';
+import { STYLE_PRESETS } from '../../../lib/style-presets';
 
 export const dynamic = 'force-dynamic';
 
@@ -89,25 +90,76 @@ export async function POST(request: Request) {
       userSettings = {};
     }
 
+    const requestedStyleId = userSettings.styleId || userSettings.stylePreference || project.stylePreference || 'style_mod_lux_ext';
+    const sceneType = userSettings.sceneType || project.sceneType || 'Exterior';
+    const projectType = userSettings.projectType || project.projectType || 'Residential';
+    const materialChoices = userSettings.materialChoices || [];
+
+    // Find style preset matching requestedStyleId
+    const stylePreset = STYLE_PRESETS.find(s => s.id === requestedStyleId || s.name === requestedStyleId) || STYLE_PRESETS[0];
+
+    // Compile Preset Defaults
+    const presetDefaults = {
+      prompt: stylePreset.promptTemplate,
+      negativePrompt: stylePreset.negativePrompt,
+      stylePreference: stylePreset.name,
+      styleId: stylePreset.id,
+      geometryLockMode: stylePreset.defaultGeometryLockMode,
+      ...stylePreset.defaultSettings,
+    };
+
+    let finalSettings: Record<string, any> = { ...presetDefaults };
+
     // Query preference memory for the best matching settings from past approvals
     let memoryApplied = false;
     let memorySource = '';
     try {
-      const memorySettings = await findBestMemoryMatch(project);
+      const activeProjectMeta = {
+        projectType,
+        sceneType,
+        stylePreference: stylePreset.name
+      };
+      
+      const memorySettings = await findBestMemoryMatch(activeProjectMeta);
       if (memorySettings) {
-        // Merge memory values as defaults — user-explicit settings always take priority
-        const mergedSettings = { ...memorySettings, ...userSettings };
-        userSettings = mergedSettings;
+        // Exclude internal _memory keys before merging
+        const { _memory_scope, _memory_score, _memory_source_render, ...restMemory } = memorySettings;
+        finalSettings = { ...finalSettings, ...restMemory };
         memoryApplied = true;
-        memorySource = memorySettings._memory_scope || '';
+        memorySource = _memory_scope || '';
       }
     } catch (memoryErr: any) {
       // Memory lookup is non-blocking — log but don't fail job creation
       console.error('[Preference Memory Lookup Error]:', memoryErr.message);
     }
 
+    // Compile prompt using the prompt builder combining chosen components
+    const baseTemplate = finalSettings.prompt || stylePreset.promptTemplate;
+    const finalPrompt = buildFinalPrompt({
+      projectType,
+      sceneType,
+      stylePromptTemplate: baseTemplate,
+      materialChoices,
+      memoryPrompt: memoryApplied ? finalSettings.prompt : undefined
+    });
+
+    finalSettings.prompt = finalPrompt;
+    finalSettings.negativePrompt = userSettings.negativePrompt || finalSettings.negativePrompt || stylePreset.negativePrompt;
+    
+    // Explicit user selections
+    finalSettings.projectType = projectType;
+    finalSettings.sceneType = sceneType;
+    finalSettings.materialChoices = materialChoices;
+
+    // Apply any explicit technical overrides if present (just in case)
+    if (userSettings.steps) finalSettings.steps = userSettings.steps;
+    if (userSettings.cfg_scale) finalSettings.cfg_scale = userSettings.cfg_scale;
+    if (userSettings.denoise !== undefined) finalSettings.denoise = userSettings.denoise;
+    if (userSettings.geometryLockMode) finalSettings.geometryLockMode = userSettings.geometryLockMode;
+    if (userSettings.seed) finalSettings.seed = userSettings.seed;
+
     const jobId = `job_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-    const jobSettings = JSON.stringify(userSettings);
+    const jobSettings = JSON.stringify(finalSettings);
 
     // Create the job and its initial event log record inside a transaction
     const newJob = await prisma.$transaction(async (tx) => {
@@ -224,3 +276,48 @@ async function findBestMemoryMatch(
 
   return null;
 }
+
+/**
+ * Prompt Builder: Combines project type, scene type, selected style template,
+ * and clicked material choices into a clean final prompt.
+ */
+function buildFinalPrompt({
+  projectType,
+  sceneType,
+  stylePromptTemplate,
+  materialChoices,
+  memoryPrompt,
+}: {
+  projectType: string;
+  sceneType: string;
+  stylePromptTemplate: string;
+  materialChoices: string[];
+  memoryPrompt?: string;
+}) {
+  let promptParts: string[] = [];
+
+  // 1. Scene context & project type as primary attention weight
+  const context = `architectural visualization of a ${projectType.toLowerCase()} ${sceneType.toLowerCase()}`;
+  promptParts.push(context);
+
+  // 2. Add style base template
+  promptParts.push(stylePromptTemplate);
+
+  // 3. Add material choices highlight tags
+  if (materialChoices && materialChoices.length > 0) {
+    const materialsStr = materialChoices.map(m => m.toLowerCase()).join(', ');
+    promptParts.push(`with material highlights of ${materialsStr}`);
+  }
+
+  // 4. Memory additions if applicable
+  if (memoryPrompt && memoryPrompt !== stylePromptTemplate) {
+    // Only append if it's different to avoid duplicate prompt segments
+    promptParts.push(`fine-tuned details: ${memoryPrompt}`);
+  }
+
+  return promptParts
+    .map(part => part.trim())
+    .filter(Boolean)
+    .join(', ');
+}
+
