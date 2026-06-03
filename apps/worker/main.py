@@ -25,6 +25,101 @@ worker_state = {
 # Load capacity profile (uses LAPTOP_PROFILE defaults)
 capacity_profile = load_profile()
 
+class LocalResourceLock:
+    def __init__(self, workspace_root):
+        self.lock_file = os.path.join(workspace_root, "local_resource_lock.json")
+        self.thread_lock = threading.Lock()
+
+    def _read_lock(self):
+        if not os.path.exists(self.lock_file):
+            return {
+                "activeJobId": None,
+                "activeStage": None,
+                "startedAt": None,
+                "status": "IDLE"
+            }
+        try:
+            with open(self.lock_file, "r") as f:
+                data = json.load(f)
+                return {
+                    "activeJobId": data.get("activeJobId"),
+                    "activeStage": data.get("activeStage"),
+                    "startedAt": data.get("startedAt"),
+                    "status": data.get("status", "IDLE")
+                }
+        except Exception:
+            return {
+                "activeJobId": None,
+                "activeStage": None,
+                "startedAt": None,
+                "status": "IDLE"
+            }
+
+    def _write_lock(self, data):
+        try:
+            # Ensure workspace directory exists (in case it is deleted)
+            os.makedirs(os.path.dirname(self.lock_file), exist_ok=True)
+            with open(self.lock_file, "w") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"[Resource Lock] Error writing lock file: {e}", file=sys.stderr)
+
+    def acquire(self, job_id: str, stage: str) -> bool:
+        with self.thread_lock:
+            lock_data = self._read_lock()
+            
+            # Check timeout of current lock if BUSY
+            if lock_data["status"] == "BUSY" and lock_data["startedAt"]:
+                try:
+                    started_dt = datetime.datetime.fromisoformat(lock_data["startedAt"])
+                    timeout_mins = int(os.environ.get("LOCAL_RESOURCE_LOCK_TIMEOUT_MINUTES", "60"))
+                    elapsed = (datetime.datetime.now() - started_dt).total_seconds() / 60.0
+                    if elapsed > timeout_mins:
+                        print(f"[Resource Lock] Force releasing stale lock for job {lock_data['activeJobId']} stage {lock_data['activeStage']} due to timeout.", file=sys.stderr)
+                        self.release_without_thread_lock()
+                        lock_data = self._read_lock()
+                except Exception as ex:
+                    print(f"[Resource Lock] Error parsing lock timestamp: {ex}", file=sys.stderr)
+            
+            if lock_data["status"] == "BUSY":
+                # Check if it's the same job and stage (re-entrant lock)
+                if lock_data["activeJobId"] == job_id and lock_data["activeStage"] == stage:
+                    return True
+                
+                print(f"[Resource Lock] Local worker is busy. Job will start after the current job finishes. (Active Job: {lock_data['activeJobId']}, Stage: {lock_data['activeStage']})", file=sys.stderr)
+                return False
+
+            # Acquire lock
+            new_data = {
+                "activeJobId": job_id,
+                "activeStage": stage,
+                "startedAt": datetime.datetime.now().isoformat(),
+                "status": "BUSY"
+            }
+            self._write_lock(new_data)
+            print(f"[Resource Lock] Acquired lock for job {job_id}, stage {stage}")
+            return True
+
+    def release(self):
+        with self.thread_lock:
+            self.release_without_thread_lock()
+
+    def release_without_thread_lock(self):
+        new_data = {
+            "activeJobId": None,
+            "activeStage": None,
+            "startedAt": None,
+            "status": "IDLE"
+        }
+        self._write_lock(new_data)
+        print("[Resource Lock] Released lock")
+        
+    def get_status(self):
+        with self.thread_lock:
+            return self._read_lock()
+
+resource_lock = LocalResourceLock(config.LOCAL_WORKSPACE_ROOT)
+
 def get_gpu_info():
     """
     Auto-detects Windows GPU configuration using wmic.
@@ -333,6 +428,16 @@ def process_job(conn, job):
         print(f"[{datetime.datetime.now().strftime('%T')}] Downloading input image from S3: {file_url} -> {local_input_path}")
         downloadFileToWorker(file_url, local_input_path)
 
+        # Acquire lock for CONTROL_MAP_PREPROCESSING
+        if config.LOCAL_RESOURCE_LOCK_ENABLED:
+            acquired = False
+            while not acquired:
+                if not running:
+                    raise KeyboardInterrupt("Termination signal received while waiting for lock")
+                acquired = resource_lock.acquire(job_id, "CONTROL_MAP_PREPROCESSING")
+                if not acquired:
+                    time.sleep(2)
+
         # 5b. Generate Canny edge control map locally, upload, and register
         local_control_path = None
         s3_control_key = None
@@ -412,6 +517,10 @@ def process_job(conn, job):
             local_control_path = None
             s3_control_key = None
 
+        # Release lock for CONTROL_MAP_PREPROCESSING
+        if config.LOCAL_RESOURCE_LOCK_ENABLED:
+            resource_lock.release()
+
         # 6. Read image dimensions to cap them safely
         width = 768
         height = 768
@@ -436,6 +545,16 @@ def process_job(conn, job):
         # Ensure dimensions are multiples of 8 (standard Latent VAE constraint)
         width = (width // 8) * 8
         height = (height // 8) * 8
+
+        # Acquire lock for COMFY_RUNNING
+        if config.LOCAL_RESOURCE_LOCK_ENABLED:
+            acquired = False
+            while not acquired:
+                if not running:
+                    raise KeyboardInterrupt("Termination signal received while waiting for lock")
+                acquired = resource_lock.acquire(job_id, "COMFY_RUNNING")
+                if not acquired:
+                    time.sleep(2)
 
         # 7. Initialize ComfyUI client and upload input image & control map
         print(f"[{datetime.datetime.now().strftime('%T')}] Initializing ComfyUI client at {config.COMFYUI_URL}...")
@@ -619,6 +738,8 @@ def process_job(conn, job):
     finally:
         cur.close()
         active_job_id = None
+        if config.LOCAL_RESOURCE_LOCK_ENABLED:
+            resource_lock.release()
 
 def handle_shutdown(signum, frame):
     """
@@ -669,6 +790,13 @@ def main():
             if active_job_id:
                 time.sleep(2)
                 continue
+
+            # Check if local resource lock is busy (e.g. from another process on this machine)
+            if config.LOCAL_RESOURCE_LOCK_ENABLED:
+                lock_status = resource_lock.get_status()
+                if lock_status["status"] == "BUSY":
+                    time.sleep(2)
+                    continue
 
             # Attempt to claim a queued job
             job = claim_job(conn)
