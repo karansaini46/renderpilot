@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "description": "Local-first architectural visualization platform",
+  "scripts": {
+    "build": "pnpm --filter shared prisma:generate && pnpm --filter web run build"
+  },
   "workspaces": [
     "apps/web"
   ]
