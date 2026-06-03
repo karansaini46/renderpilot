@@ -18,6 +18,30 @@ export async function GET(
       orderBy: { createdAt: 'asc' }
     });
 
+    const includeSuggestions = new URL(request.url).searchParams.get('include_suggestions');
+    if (includeSuggestions === 'true') {
+      const project = await prisma.project.findUnique({
+        where: { id: projectId }
+      });
+
+      let suggestions: any[] = [];
+      if (project && project.projectType && project.sceneType && project.stylePreference) {
+        suggestions = await prisma.materialMemory.findMany({
+          where: {
+            projectType: project.projectType,
+            sceneType: project.sceneType,
+            stylePreference: project.stylePreference
+          },
+          orderBy: [
+            { successCount: 'desc' },
+            { lastUsedAt: 'desc' }
+          ],
+          take: 10
+        });
+      }
+      return NextResponse.json({ mappings, suggestions }, { status: 200 });
+    }
+
     return NextResponse.json(mappings, { status: 200 });
   } catch (error: any) {
     console.error('[Materials GET Error]:', error.message);
@@ -112,6 +136,55 @@ export async function POST(
         correctionSource: 'user'
       }
     });
+
+    // Record this mapping in MaterialMemory to improve future defaults
+    const project = await prisma.project.findUnique({
+      where: { id: projectId }
+    });
+
+    if (project && project.projectType && project.sceneType && project.stylePreference) {
+      try {
+        const memoryCategory = detectedClass.toLowerCase().trim();
+        const memoryFinish = selectedMaterial.trim();
+
+        const existingMemory = await prisma.materialMemory.findFirst({
+          where: {
+            projectType: project.projectType,
+            sceneType: project.sceneType,
+            stylePreference: project.stylePreference,
+            category: memoryCategory,
+            finish: memoryFinish
+          }
+        });
+
+        if (existingMemory) {
+          await prisma.materialMemory.update({
+            where: { id: existingMemory.id },
+            data: {
+              successCount: { increment: 1 },
+              lastUsedAt: new Date(),
+              confidence: 1.0
+            }
+          });
+        } else {
+          await prisma.materialMemory.create({
+            data: {
+              id: `mem_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+              projectType: project.projectType,
+              sceneType: project.sceneType,
+              stylePreference: project.stylePreference,
+              category: memoryCategory,
+              finish: memoryFinish,
+              confidence: 1.0,
+              successCount: 1,
+              lastUsedAt: new Date()
+            }
+          });
+        }
+      } catch (memErr: any) {
+        console.error('[Materials POST Memory Error]:', memErr.message);
+      }
+    }
 
     return NextResponse.json(mapping, { status: 200 });
 

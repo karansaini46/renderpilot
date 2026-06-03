@@ -125,6 +125,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
 
   // Material Mapping State
   const [materialMappings, setMaterialMappings] = useState<any[]>([]);
+  const [materialSuggestions, setMaterialSuggestions] = useState<any[]>([]);
   const [isLoadingMaterials, setIsLoadingMaterials] = useState(false);
   const [newZoneName, setNewZoneName] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('wall');
@@ -271,10 +272,11 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
   const fetchMaterials = async () => {
     setIsLoadingMaterials(true);
     try {
-      const res = await fetch(`/api/projects/${id}/materials`);
+      const res = await fetch(`/api/projects/${id}/materials?include_suggestions=true`);
       if (res.ok) {
         const data = await res.json();
-        setMaterialMappings(data);
+        setMaterialMappings(data.mappings || []);
+        setMaterialSuggestions(data.suggestions || []);
       }
     } catch (err) {
       console.error('Failed to fetch material mappings:', err);
@@ -357,6 +359,14 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
     } catch (err) {
       console.error('Error deleting material:', err);
     }
+  };
+
+  const handleApplySuggestion = (suggestion: any) => {
+    setNewZoneName(`${suggestion.category.charAt(0).toUpperCase() + suggestion.category.slice(1)} Zone`);
+    setSelectedCategory(suggestion.category);
+    setNewFinish(suggestion.finish);
+    setNewLocked(true);
+    setEditingMaterialId(null);
   };
 
   useEffect(() => {
@@ -997,6 +1007,49 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                       </h3>
                       {isLoadingMaterials && <Loader2 className="h-3.5 w-3.5 text-indigo-400 animate-spin" />}
                     </div>
+
+                    {materialSuggestions.length > 0 && (
+                      <div className="bg-slate-900/20 border border-slate-900/60 rounded-xl p-5 space-y-4">
+                        <div className="flex items-center space-x-2">
+                          <Sparkles className="h-4 w-4 text-indigo-400" />
+                          <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+                            Suggested Finishes from Past Projects
+                          </h4>
+                        </div>
+                        <p className="text-[10px] text-slate-500">
+                          Based on other projects using <strong>{project?.projectType} + {project?.sceneType} + {project?.stylePreference}</strong>. Click any suggestion to load it into the editor.
+                        </p>
+                        
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                          {materialSuggestions.map((suggestion) => (
+                            <button
+                              key={suggestion.id}
+                              type="button"
+                              onClick={() => handleApplySuggestion(suggestion)}
+                              className="text-left bg-slate-950 hover:bg-slate-900 border border-slate-900 hover:border-slate-800 rounded-xl p-3.5 flex items-center justify-between group transition-all duration-300"
+                            >
+                              <div className="min-w-0 pr-3">
+                                <span className="inline-block px-1.5 py-0.5 rounded text-[8px] font-extrabold uppercase bg-indigo-950/40 text-indigo-400 border border-indigo-500/10 mb-1.5">
+                                  {suggestion.category}
+                                </span>
+                                <h5 className="text-xs font-semibold text-slate-300 italic truncate group-hover:text-white transition-colors">
+                                  &ldquo;{suggestion.finish}&rdquo;
+                                </h5>
+                              </div>
+                              <div className="text-right shrink-0">
+                                <span className="block text-[8px] font-bold text-slate-550 uppercase tracking-wider">
+                                  Used {suggestion.successCount}x
+                                </span>
+                                <span className="inline-flex items-center text-[10px] text-indigo-400 font-semibold mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <span>Apply</span>
+                                  <Plus className="h-3 w-3 ml-0.5" />
+                                </span>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
                     {materialMappings.length === 0 ? (
                       <div className="text-center py-12 border border-dashed border-slate-900 rounded-xl bg-slate-950/20">

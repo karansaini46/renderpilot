@@ -259,3 +259,22 @@ model Benchmark {
   @@map("benchmarks")
   @@index([createdAt])
 }
+
+// 15. Material Memory model
+model MaterialMemory {
+  id              String   @id
+  projectType     String   @map("project_type")
+  sceneType       String   @map("scene_type")
+  stylePreference String   @map("style_preference")
+  category        String
+  finish          String
+  confidence      Float    @default(1.0)
+  successCount    Int      @default(1) @map("success_count")
+  lastUsedAt      DateTime @default(now()) @map("last_used_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@map("material_memory")
+  @@index([projectType, sceneType, stylePreference])
+  @@index([createdAt])
+}
+
