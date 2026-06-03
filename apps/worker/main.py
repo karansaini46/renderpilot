@@ -333,6 +333,85 @@ def process_job(conn, job):
         print(f"[{datetime.datetime.now().strftime('%T')}] Downloading input image from S3: {file_url} -> {local_input_path}")
         downloadFileToWorker(file_url, local_input_path)
 
+        # 5b. Generate Canny edge control map locally, upload, and register
+        local_control_path = None
+        s3_control_key = None
+        
+        try:
+            from PIL import Image, ImageFilter
+            local_control_filename = f"canny_{os.path.basename(file_url)}"
+            if not local_control_filename.lower().endswith(".png"):
+                local_control_filename += ".png"
+            local_control_path = os.path.join(workspace_dir, local_control_filename)
+            
+            print(f"[{datetime.datetime.now().strftime('%T')}] Generating lightweight Canny edge control map locally...")
+            with Image.open(local_input_path) as img:
+                gray = img.convert("L")
+                blurred = gray.filter(ImageFilter.GaussianBlur(radius=1.2))
+                edges = blurred.filter(ImageFilter.FIND_EDGES)
+                # Binary thresholding for clean black & white mask
+                crisp_edges = edges.point(lambda p: 255 if p > 25 else 0)
+                final_control = crisp_edges.convert("RGB")
+                final_control.save(local_control_path, "PNG")
+                
+            print(f"[{datetime.datetime.now().strftime('%T')}] Canny edge map generated: {local_control_path}")
+            
+            # Upload control map to object storage
+            timestamp_sec = int(time.time())
+            s3_control_key = f"users/{user_id}/projects/{project_id}/previews/canny_{job_id}_{timestamp_sec}.png"
+            print(f"[{datetime.datetime.now().strftime('%T')}] Uploading control map to S3: {s3_control_key}")
+            uploadFileFromWorker(local_control_path, s3_control_key)
+            
+            # Register in project_files database
+            file_id = f"file_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+            metadata_json = json.dumps({
+                "size": f"{(os.path.getsize(local_control_path) / 1024):.2f} KB",
+                "uploadedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "role": "control_map",
+                "preprocessor": "canny",
+                "sourceJobId": job_id
+            })
+            
+            cur_file = conn.cursor()
+            try:
+                cur_file.execute("""
+                    INSERT INTO project_files (id, project_id, file_url, file_type, metadata_json, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s);
+                """, (
+                    file_id,
+                    project_id,
+                    s3_control_key,
+                    "image/png",
+                    metadata_json,
+                    datetime.datetime.now(datetime.timezone.utc)
+                ))
+                
+                # Log preprocessing job event
+                event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                cur_file.execute("""
+                    INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                    VALUES (%s, %s, 'preprocessing', %s, %s, %s);
+                """, (
+                    event_id,
+                    job_id,
+                    "preprocessing",
+                    "Canny edge control map preprocessed locally and saved.",
+                    json.dumps({"fileId": file_id, "s3Key": s3_control_key}),
+                    datetime.datetime.now(datetime.timezone.utc)
+                ))
+                conn.commit()
+                print(f"[{datetime.datetime.now().strftime('%T')}] Registered control map in DB: {file_id}")
+            except Exception as db_err:
+                conn.rollback()
+                print(f"Failed to save control map metadata to database: {db_err}", file=sys.stderr)
+            finally:
+                cur_file.close()
+                
+        except Exception as preprocess_err:
+            print(f"Failed to preprocess control map: {preprocess_err}", file=sys.stderr)
+            local_control_path = None
+            s3_control_key = None
+
         # 6. Read image dimensions to cap them safely
         width = 768
         height = 768
@@ -358,13 +437,21 @@ def process_job(conn, job):
         width = (width // 8) * 8
         height = (height // 8) * 8
 
-        # 7. Initialize ComfyUI client and upload input image
+        # 7. Initialize ComfyUI client and upload input image & control map
         print(f"[{datetime.datetime.now().strftime('%T')}] Initializing ComfyUI client at {config.COMFYUI_URL}...")
         comfy_client = ComfyUIClient(config.COMFYUI_URL)
         comfy_client.check_health()
         
         print(f"[{datetime.datetime.now().strftime('%T')}] Uploading input image to ComfyUI...")
         comfyui_input_name = comfy_client.upload_image(local_input_path)
+        
+        comfyui_control_name = None
+        if local_control_path:
+            try:
+                print(f"[{datetime.datetime.now().strftime('%T')}] Uploading control map image to ComfyUI...")
+                comfyui_control_name = comfy_client.upload_image(local_control_path)
+            except Exception as comfy_upload_err:
+                print(f"Failed to upload control map to ComfyUI: {comfy_upload_err}", file=sys.stderr)
 
         # 8. Render variations sequentially
         variations = clamped_settings.get("variations", 2)
@@ -434,6 +521,7 @@ def process_job(conn, job):
                 cfg_scale=cfg_scale,
                 denoise=denoise,
                 geometry_lock_mode=geometry_lock_mode,
+                control_image=comfyui_control_name,
                 on_progress=on_comfyui_progress
             )
             

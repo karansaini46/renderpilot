@@ -184,6 +184,7 @@ class ComfyUIClient:
         cfg_scale: float = 7.0,
         denoise: float = 1.0,
         geometry_lock_mode: str = 'accurate',
+        control_image: str | None = None,
     ) -> dict:
         """
         Injects render parameters into a workflow template by scanning
@@ -274,9 +275,14 @@ class ComfyUIClient:
                     inputs['height'] = height
 
             # Load Image node — inject input image path
-            if class_type == 'LoadImage' and input_image:
-                if 'image' in inputs:
-                    inputs['image'] = input_image
+            if class_type == 'LoadImage':
+                meta_title = node.get('_meta', {}).get('title', '').lower()
+                if 'control' in meta_title or 'canny' in meta_title or 'edge' in meta_title:
+                    if control_image and 'image' in inputs:
+                        inputs['image'] = control_image
+                else:
+                    if input_image and 'image' in inputs:
+                        inputs['image'] = input_image
 
             # CheckpointLoaderSimple — select model name
             if class_type == 'CheckpointLoaderSimple':
@@ -614,6 +620,7 @@ class ComfyUIClient:
         cfg_scale: float = 7.0,
         denoise: float = 1.0,
         geometry_lock_mode: str = 'accurate',
+        control_image: str | None = None,
         comfyui_output_dir: str | None = None,
         on_progress=None,
     ) -> list[str]:
@@ -663,6 +670,7 @@ class ComfyUIClient:
             cfg_scale=cfg_scale,
             denoise=denoise,
             geometry_lock_mode=geometry_lock_mode,
+            control_image=control_image,
         )
 
         # Step 3: Submit workflow
