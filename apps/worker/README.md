@@ -58,9 +58,30 @@ Execute the following commands in your terminal (PowerShell or Command Prompt) i
    ```
 
 5. **Start the worker script**:
+
+   The worker defaults to **Batch mode** (laptop-safe sequential processing until the queue is empty, then exits):
    ```powershell
    python main.py
    ```
+
+   **Available CLI Run Modes:**
+   - **Batch Mode** (default): Processes all queued jobs sequentially, exiting when the queue becomes empty.
+     ```powershell
+     python main.py --mode batch
+     ```
+   - **Manual Mode**: Process a single job or a specific job, then exit immediately.
+     - Process one job (processes oldest queued job and exits):
+       ```powershell
+       python main.py --once
+       ```
+     - Process specific job ID (claims and processes only this job ID and exits):
+       ```powershell
+       python main.py --job-id job_123
+       ```
+   - **Live Mode**: Continuously poll the database queue for new jobs.
+     ```powershell
+     python main.py --mode live
+     ```
 
 ## Key Worker Features
 

@@ -9,6 +9,7 @@ import threading
 import subprocess
 import psycopg2
 import json
+import argparse
 from config import config
 from capacity import load_profile, downshift_job_settings, requires_review, LAPTOP_PROFILE
 from storage import downloadFileToWorker, uploadFileFromWorker
@@ -17,6 +18,7 @@ from comfyui_client import ComfyUIClient, ComfyUIConnectionError, ComfyUIExecuti
 # Control flag for grace shutdown handling
 running = True
 active_job_id = None
+worker_mode = "batch"  # Active run mode ('manual', 'batch', or 'live')
 worker_state = {
     "status": "online",
     "mode": "idle"
@@ -156,7 +158,7 @@ def heartbeat_loop():
     """
     Background daemon loop that reports worker heartbeat every 10s.
     """
-    global running, active_job_id
+    global running, active_job_id, worker_mode
     print(f"[{datetime.datetime.now().strftime('%T')}] Heartbeat daemon loop initiated.")
     
     # Separate connection for the heartbeat daemon
@@ -193,7 +195,7 @@ def heartbeat_loop():
                 active_job_id,
                 gpu_name,
                 vram_gb,
-                "rendering" if active_job_id else "idle",
+                worker_mode,
                 now
             ))
             hb_conn.commit()
@@ -224,36 +226,44 @@ def heartbeat_loop():
     except Exception as e:
         print(f"Failed to report offline status: {e}", file=sys.stderr)
 
-def claim_job(conn):
+def claim_job(conn, job_id=None):
     """
-    Transaction-safe raw SQL claim locking the oldest queued job row.
+    Transaction-safe raw SQL claim locking the oldest queued job row or a specific job ID.
     """
     cur = conn.cursor()
     try:
         cur.execute("BEGIN;")
         
-        # Select the oldest queued job and lock the row to avoid parallel claims
-        cur.execute("""
-            SELECT id, project_id, settings_json FROM render_jobs
-            WHERE status = 'queued'
-            ORDER BY created_at ASC
-            LIMIT 1
-            FOR UPDATE SKIP LOCKED;
-        """)
+        if job_id:
+            # Claim the specific job
+            cur.execute("""
+                SELECT id, project_id, settings_json FROM render_jobs
+                WHERE id = %s AND status = 'queued'
+                FOR UPDATE;
+            """, (job_id,))
+        else:
+            # Select the oldest queued job and lock the row to avoid parallel claims
+            cur.execute("""
+                SELECT id, project_id, settings_json FROM render_jobs
+                WHERE status = 'queued'
+                ORDER BY created_at ASC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED;
+            """)
         row = cur.fetchone()
         
         if not row:
             conn.commit()
             return None
             
-        job_id, project_id, settings_json = row
+        claimed_job_id, project_id, settings_json = row
         
         # Update job status and set claiming worker
         cur.execute("""
             UPDATE render_jobs
             SET status = 'claimed', worker_id = %s
             WHERE id = %s;
-        """, (config.WORKER_ID, job_id))
+        """, (config.WORKER_ID, claimed_job_id))
         
         # Add claim event to job_events
         event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
@@ -261,11 +271,11 @@ def claim_job(conn):
         cur.execute("""
             INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
             VALUES (%s, %s, 'claimed', %s, '{}', %s);
-        """, (event_id, job_id, event_message, datetime.datetime.now(datetime.timezone.utc)))
+        """, (event_id, claimed_job_id, event_message, datetime.datetime.now(datetime.timezone.utc)))
         
         conn.commit()
         return {
-            "id": job_id,
+            "id": claimed_job_id,
             "project_id": project_id,
             "settings_json": settings_json
         }
@@ -828,14 +838,51 @@ signal.signal(signal.SIGINT, handle_shutdown)
 signal.signal(signal.SIGTERM, handle_shutdown)
 
 def main():
+    global running, worker_mode
+
+    # Parse arguments
+    parser = argparse.ArgumentParser(description="RenderPilot Laptop Worker Node", add_help=False)
+    parser.add_argument('--mode', type=str, choices=['manual', 'batch', 'live'], default=None)
+    parser.add_argument('--once', action='store_true')
+    parser.add_argument('--job-id', type=str, default=None)
+    parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--validate', action='store_true')
+    parser.add_argument('-h', '--help', action='store_true')
+
+    args, unknown = parser.parse_known_args()
+
+    if args.help:
+        print("Usage: python apps/worker/main.py [options]")
+        print("Options:")
+        print("  --mode <manual|batch|live>  Worker run mode (default: batch)")
+        print("  --once                      Run in manual mode, process one job, and exit")
+        print("  --job-id <id>               Run in manual mode, process specific job, and exit")
+        print("  --dry-run                   Perform a dry-run configuration validation and exit")
+        print("  --validate                  Validation check")
+        print("  -h, --help                  Show this help message")
+        return
+
     # Dry-run validation check for configuration and test suites
-    if '--dry-run' in sys.argv or '--validate' in sys.argv or os.environ.get('WORKER_DRY_RUN', 'false').lower() == 'true':
+    if args.dry_run or args.validate or os.environ.get('WORKER_DRY_RUN', 'false').lower() == 'true':
         print("Worker client started successfully.")
         print(f"Worker ID:     {config.WORKER_ID}")
         print(f"Worker Name:   {config.WORKER_NAME}")
         return
 
-    global running
+    # Determine mode
+    if args.job_id or args.once:
+        worker_mode = 'manual'
+        if args.mode and args.mode != 'manual':
+            print(f"Warning: CLI flags --once/--job-id conflict with --mode {args.mode}. Overriding mode to manual.", file=sys.stderr)
+    elif args.mode:
+        worker_mode = args.mode
+    else:
+        worker_mode = 'batch'
+
+    if worker_mode == 'manual' and not args.once and not args.job_id:
+        print("Error: Manual mode requires --once or --job-id <job_id>.", file=sys.stderr)
+        sys.exit(1)
+
     print("==================================================")
     print("        RenderPilot Laptop Worker Node started     ")
     print("==================================================")
@@ -843,6 +890,7 @@ def main():
     print(f"Worker Name:   {config.WORKER_NAME}")
     print(f"GPU Model:     {gpu_name}")
     print(f"VRAM Capacity: {vram_gb} GB")
+    print(f"Active Mode:   {worker_mode.upper()}")
     print("--------------------------------------------------")
     print("Capacity Guardrails (Laptop Profile):")
     print(f"  Max Concurrent Jobs:    {capacity_profile['max_concurrent_jobs']}")
@@ -860,6 +908,8 @@ def main():
     hb_thread.start()
     
     conn = None
+    first_run = True
+
     while running:
         try:
             if not conn or conn.closed:
@@ -880,13 +930,41 @@ def main():
                     continue
 
             # Attempt to claim a queued job
-            job = claim_job(conn)
+            if worker_mode == 'manual' and args.job_id:
+                if first_run:
+                    job = claim_job(conn, job_id=args.job_id)
+                else:
+                    job = None
+            else:
+                job = claim_job(conn)
+                
             if job:
                 # Execute the claimed job
                 process_job(conn, job)
+                
+                # In manual mode, we process only one job, then exit
+                if worker_mode == 'manual':
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Manual mode: finished processing job {job['id']}. Exiting.")
+                    running = False
+                    break
             else:
-                # Sleep briefly between queries if queue is empty
-                time.sleep(4)
+                # No job was claimed
+                if worker_mode == 'manual':
+                    if args.job_id:
+                        print(f"[{datetime.datetime.now().strftime('%T')}] Manual mode: job {args.job_id} not found or not in queued status. Exiting.")
+                    else:
+                        print(f"[{datetime.datetime.now().strftime('%T')}] Manual mode: no queued jobs found. Exiting.")
+                    running = False
+                    break
+                elif worker_mode == 'batch':
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Batch mode: queue is empty. Exiting.")
+                    running = False
+                    break
+                else:
+                    # Live mode: poll continuously
+                    time.sleep(4)
+            
+            first_run = False
                 
         except psycopg2.OperationalError as db_err:
             print(f"Database operational connection error: {db_err}. Retrying in 5s...", file=sys.stderr)
@@ -901,12 +979,28 @@ def main():
             print(f"Unexpected loop exception: {err}. Continuing...", file=sys.stderr)
             time.sleep(4)
             
-    # Cleanup main connections
+    # Cleanup main connections and report offline
     if conn:
         try:
             conn.close()
         except Exception:
             pass
+
+    print(f"[{datetime.datetime.now().strftime('%T')}] Reporting worker node offline...")
+    try:
+        cleanup_conn = psycopg2.connect(config.DATABASE_URL)
+        cur_cleanup = cleanup_conn.cursor()
+        now = datetime.datetime.now(datetime.timezone.utc)
+        cur_cleanup.execute("""
+            UPDATE workers
+            SET status = 'offline', mode = 'idle', last_seen_at = %s, last_heartbeat = %s, current_job_id = NULL
+            WHERE id = %s;
+        """, (now, now, config.WORKER_ID))
+        cleanup_conn.commit()
+        cur_cleanup.close()
+        cleanup_conn.close()
+    except Exception as e:
+        print(f"Failed to report offline status on cleanup: {e}", file=sys.stderr)
             
     print(f"[{datetime.datetime.now().strftime('%T')}] Worker shutdown successfully complete. Goodbye.")
 
