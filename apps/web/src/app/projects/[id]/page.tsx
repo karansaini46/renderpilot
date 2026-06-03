@@ -116,6 +116,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
   const [selectedSceneType, setSelectedSceneType] = useState('Exterior');
   const [selectedProjectType, setSelectedProjectType] = useState('Residential');
   const [selectedMaterials, setSelectedMaterials] = useState<string[]>([]);
+  const [selectedGeometryLockMode, setSelectedGeometryLockMode] = useState('accurate');
 
   const checkWorkerAvailability = async () => {
     try {
@@ -285,6 +286,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
     setSelectedSceneType(project.sceneType || 'Exterior');
     setSelectedProjectType(project.projectType || 'Residential');
     setSelectedMaterials([]);
+    setSelectedGeometryLockMode(matchingPreset?.defaultGeometryLockMode || 'accurate');
     setIsLaunchModalOpen(true);
   };
 
@@ -302,7 +304,8 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
             styleId: selectedStylePreset,
             sceneType: selectedSceneType,
             projectType: selectedProjectType,
-            materialChoices: selectedMaterials
+            materialChoices: selectedMaterials,
+            geometryLockMode: selectedGeometryLockMode
           })
         })
       });
@@ -1269,7 +1272,10 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                     return (
                       <div
                         key={style.id}
-                        onClick={() => setSelectedStylePreset(style.id)}
+                        onClick={() => {
+                          setSelectedStylePreset(style.id);
+                          setSelectedGeometryLockMode(style.defaultGeometryLockMode);
+                        }}
                         className={`flex flex-col p-4 rounded-xl border cursor-pointer text-left transition-all duration-200 select-none group ${
                           isSelected 
                             ? 'bg-indigo-600/10 border-indigo-500/80 shadow-[0_0_15px_rgba(99,102,241,0.1)]' 
@@ -1295,7 +1301,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                             Geometry
                           </span>
                           <span className={`px-1.5 py-0.5 rounded text-[8px] font-extrabold uppercase tracking-wider ${
-                            style.defaultGeometryLockMode === 'locked' 
+                            style.defaultGeometryLockMode === 'accurate' || style.defaultGeometryLockMode === 'technical'
                               ? 'bg-indigo-950/80 text-indigo-400 border border-indigo-500/20' 
                               : 'bg-slate-900 text-slate-400 border border-slate-800'
                           }`}>
@@ -1341,10 +1347,82 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                 </div>
               </div>
 
-              {/* Step 3: Click-to-select Material Vibe tags */}
+              {/* Step 4: Select Geometry Lock Mode */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-3">
+                  4. Select Geometry Lock Mode
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {[
+                    {
+                      id: 'creative',
+                      name: 'Creative',
+                      desc: 'More visual freedom, lower composition constraint. Best for early concept iteration.',
+                      badge: 'High Freedom'
+                    },
+                    {
+                      id: 'balanced',
+                      name: 'Balanced',
+                      desc: 'Preserves composition outline while allowing some style/material modifications.',
+                      badge: 'Medium Lock'
+                    },
+                    {
+                      id: 'accurate',
+                      name: 'Accurate (Recommended)',
+                      desc: 'Preserves spatial composition tightly. Ideal default for standard client renders.',
+                      badge: 'Strong Lock'
+                    },
+                    {
+                      id: 'technical',
+                      name: 'Technical',
+                      desc: 'Highest contour alignment, lowest detail variance. Best for blueprints/precise mockups.',
+                      badge: 'Max Lock'
+                    }
+                  ].map((mode) => {
+                    const isSelected = selectedGeometryLockMode === mode.id;
+                    return (
+                      <div
+                        key={mode.id}
+                        onClick={() => setSelectedGeometryLockMode(mode.id)}
+                        className={`flex flex-col p-4.5 rounded-xl border cursor-pointer text-left transition-all duration-200 select-none group ${
+                          isSelected 
+                            ? 'bg-indigo-600/10 border-indigo-500/80 shadow-[0_0_15px_rgba(99,102,241,0.1)]' 
+                            : 'bg-slate-950/40 border-slate-850 hover:border-slate-800 hover:bg-slate-900/40'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3 mb-1.5">
+                          <h4 className={`text-xs font-bold transition-colors ${isSelected ? 'text-indigo-400' : 'text-slate-200 group-hover:text-slate-100'}`}>
+                            {mode.name}
+                          </h4>
+                          {isSelected && (
+                            <span className="p-0.5 rounded-full bg-indigo-500 text-slate-950 flex items-center justify-center shrink-0">
+                              <Check className="h-3 w-3" />
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-slate-450 leading-relaxed mb-3 flex-1 font-medium">
+                          {mode.desc}
+                        </p>
+                        <div className="flex items-center justify-between mt-auto pt-2 border-t border-slate-900/60">
+                          <span className="text-[8px] font-bold text-slate-500 uppercase tracking-wider">Constraint</span>
+                          <span className={`px-1.5 py-0.5 rounded text-[8px] font-extrabold uppercase tracking-wider ${
+                            isSelected 
+                              ? 'bg-indigo-950/80 text-indigo-400 border border-indigo-500/20' 
+                              : 'bg-slate-900 text-slate-400 border border-slate-800'
+                          }`}>
+                            {mode.badge}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Step 5: Click-to-select Material Vibe tags */}
               <div>
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2.5">
-                  4. Add Material Accent Vibes
+                  5. Add Material Accent Vibes
                 </label>
                 <div className="flex flex-wrap gap-2">
                   {['Glass & Steel', 'Concrete Minimalism', 'Warm Oak Wood', 'Brushed Brass', 'Travertine Stone', 'Polished Terrazzo', 'Exposed Brick', 'Matte Black Metal'].map((mat) => {

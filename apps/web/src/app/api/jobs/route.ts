@@ -155,7 +155,15 @@ export async function POST(request: Request) {
     if (userSettings.steps) finalSettings.steps = userSettings.steps;
     if (userSettings.cfg_scale) finalSettings.cfg_scale = userSettings.cfg_scale;
     if (userSettings.denoise !== undefined) finalSettings.denoise = userSettings.denoise;
-    if (userSettings.geometryLockMode) finalSettings.geometryLockMode = userSettings.geometryLockMode;
+    
+    // Validate and set geometryLockMode, defaulting to 'accurate'
+    let geometryLockMode = userSettings.geometryLockMode || finalSettings.geometryLockMode || 'accurate';
+    const validModes = ['creative', 'balanced', 'accurate', 'technical'];
+    if (!validModes.includes(geometryLockMode.toLowerCase())) {
+      geometryLockMode = 'accurate';
+    }
+    finalSettings.geometryLockMode = geometryLockMode.toLowerCase();
+
     if (userSettings.seed) finalSettings.seed = userSettings.seed;
 
     const jobId = `job_${Date.now()}_${Math.floor(Math.random() * 1000)}`;

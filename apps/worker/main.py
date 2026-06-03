@@ -377,7 +377,23 @@ def process_job(conn, job):
             
         steps = clamped_settings.get("steps", 20)
         cfg_scale = clamped_settings.get("cfg_scale", 7.0)
-        denoise = clamped_settings.get("denoise", 0.65)
+        
+        # Resolve geometry lock mode and map to denoise
+        geometry_lock_mode = (clamped_settings.get("geometryLockMode") or clamped_settings.get("geometry_lock_mode") or "accurate").lower()
+        mode_denoise_map = {
+            "creative": 0.85,
+            "balanced": 0.65,
+            "accurate": 0.50,
+            "technical": 0.30
+        }
+        
+        # Override denoise based on mode if it matches default or isn't specified
+        denoise = clamped_settings.get("denoise")
+        if denoise is None or denoise == 0.65 or denoise == 0.50 or denoise == 0.70 or denoise == 0.55:
+            denoise = mode_denoise_map.get(geometry_lock_mode, 0.50)
+            
+        clamped_settings["denoise"] = denoise
+        clamped_settings["geometryLockMode"] = geometry_lock_mode
         
         print(f"[{datetime.datetime.now().strftime('%T')}] Launching sequential variation loops ({variations} total)...")
         
@@ -417,6 +433,7 @@ def process_job(conn, job):
                 steps=steps,
                 cfg_scale=cfg_scale,
                 denoise=denoise,
+                geometry_lock_mode=geometry_lock_mode,
                 on_progress=on_comfyui_progress
             )
             
