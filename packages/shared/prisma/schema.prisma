@@ -87,9 +87,12 @@ model RenderJob {
   id           String      @id
   projectId    String      @map("project_id")
   workerId     String?     @map("worker_id")
-  status       String      @default("queued") // queued, claimed, processing, completed, failed, cancelled
+  status       String      @default("queued") // queued, claimed, processing, completed, failed, cancelled, needs_review
   progress     Int         @default(0)
   errorMessage String?     @map("error_message")
+  retryCount   Int         @default(0) @map("retry_count")
+  maxRetries   Int         @default(3) @map("max_retries")
+  failedAt     DateTime?   @map("failed_at")
   settingsJson String?     @default("{}") @map("settings_json")
   createdAt    DateTime    @default(now()) @map("created_at")
   completedAt  DateTime?   @map("completed_at")
@@ -126,7 +129,10 @@ model Render {
   jobId           String?          @map("job_id")
   projectId       String           @map("project_id")
   baseImageUrl    String?          @map("base_image_url")
-  finalImageUrl   String           @map("final_image_url")
+  finalImageUrl   String?          @map("final_image_url")
+  previewUrl      String?          @map("preview_url")
+  finalUrl        String?          @map("final_url")
+  cacheKey        String?          @map("cache_key")
   depthUrl        String?          @map("depth_url")
   cannyUrl        String?          @map("canny_url")
   normalUrl       String?          @map("normal_url")
@@ -146,6 +152,7 @@ model Render {
   @@map("renders")
   @@index([projectId])
   @@index([createdAt])
+  @@index([cacheKey])
 }
 
 // 8. Render Feedback model
@@ -204,6 +211,8 @@ model TrainingSample {
   imageUrl            String   @map("image_url")
   caption             String?
   qualityScore        Float?   @map("quality_score")
+  sceneType           String?  @map("scene_type")
+  datasetSplit        String?  @default("train") @map("dataset_split")
   approvedForTraining Boolean  @default(false) @map("approved_for_training")
   createdAt           DateTime @default(now()) @map("created_at")
   render              Render   @relation(fields: [renderId], references: [id], onDelete: Cascade)
@@ -257,3 +266,22 @@ model Benchmark {
   @@map("benchmarks")
   @@index([createdAt])
 }
+
+// 15. Material Memory model
+model MaterialMemory {
+  id              String   @id
+  projectType     String   @map("project_type")
+  sceneType       String   @map("scene_type")
+  stylePreference String   @map("style_preference")
+  category        String
+  finish          String
+  confidence      Float    @default(1.0)
+  successCount    Int      @default(1) @map("success_count")
+  lastUsedAt      DateTime @default(now()) @map("last_used_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@map("material_memory")
+  @@index([projectType, sceneType, stylePreference])
+  @@index([createdAt])
+}
+

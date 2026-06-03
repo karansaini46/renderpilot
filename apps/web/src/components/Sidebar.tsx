@@ -11,7 +11,8 @@ import {
   Menu, 
   X, 
   Cpu, 
-  Layers
+  Layers,
+  Database
 } from 'lucide-react';
 
 interface Worker {
@@ -38,6 +39,7 @@ export default function Sidebar({ workerStatus: initialStatus = 'offline', worke
     { name: 'Projects', href: '/projects', icon: FolderKanban },
     { name: 'Jobs Queue', href: '/jobs', icon: ListTodo },
     { name: 'Workers', href: '/workers', icon: Cpu },
+    { name: 'Dataset', href: '/dataset', icon: Database },
     { name: 'Settings', href: '/settings', icon: SettingsIcon },
   ];
 

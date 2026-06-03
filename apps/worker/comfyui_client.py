@@ -183,6 +183,8 @@ class ComfyUIClient:
         steps: int = 20,
         cfg_scale: float = 7.0,
         denoise: float = 1.0,
+        geometry_lock_mode: str = 'accurate',
+        control_image: str | None = None,
     ) -> dict:
         """
         Injects render parameters into a workflow template by scanning
@@ -203,15 +205,39 @@ class ComfyUIClient:
             steps: Number of sampling steps.
             cfg_scale: Classifier-free guidance scale.
             denoise: Denoising strength (1.0 = full generation).
+            geometry_lock_mode: Geometry lock mode (creative, balanced, accurate, technical).
 
         Returns:
             The modified workflow dict.
         """
+        # Map geometry lock mode to ComfyUI variables
+        mode = (geometry_lock_mode or 'accurate').lower()
+        mapped_denoise = denoise
+        control_strength = 0.9
+        prompt_constraint = ""
+
+        if mode == 'creative':
+            mapped_denoise = 0.85
+            control_strength = 0.4
+            prompt_constraint = "more visual freedom, creative details"
+        elif mode == 'balanced':
+            mapped_denoise = 0.65
+            control_strength = 0.7
+            prompt_constraint = "preserves composition, balanced style changes"
+        elif mode == 'accurate':
+            mapped_denoise = 0.50
+            control_strength = 0.9
+            prompt_constraint = "strict composition preservation, realistic structure, client-ready layout"
+        elif mode == 'technical':
+            mapped_denoise = 0.30
+            control_strength = 1.0
+            prompt_constraint = "strongest preservation of contours, exact geometry, technical blueprint match"
+
         for node_id, node in workflow.items():
             class_type = node.get('class_type', '')
             inputs = node.get('inputs', {})
 
-            # KSampler and KSamplerAdvanced nodes — inject seed, steps, cfg
+            # KSampler and KSamplerAdvanced nodes — inject seed, steps, cfg, denoise
             if class_type in ('KSampler', 'KSamplerAdvanced'):
                 if 'seed' in inputs:
                     inputs['seed'] = seed
@@ -220,9 +246,14 @@ class ComfyUIClient:
                 if 'cfg' in inputs:
                     inputs['cfg'] = cfg_scale
                 if 'denoise' in inputs:
-                    inputs['denoise'] = denoise
+                    inputs['denoise'] = mapped_denoise
 
-            # CLIP Text Encode nodes — inject prompts
+            # ControlNet apply nodes — inject control strength
+            if class_type in ('ControlNetApply', 'ControlNetApplyAdvanced'):
+                if 'strength' in inputs:
+                    inputs['strength'] = control_strength
+
+            # CLIP Text Encode nodes — inject prompts with constraints
             # Convention: node title or _meta.title containing "negative" gets negative prompt
             if class_type == 'CLIPTextEncode':
                 meta_title = node.get('_meta', {}).get('title', '').lower()
@@ -231,7 +262,10 @@ class ComfyUIClient:
                         inputs['text'] = negative_prompt
                 else:
                     if 'text' in inputs:
-                        inputs['text'] = prompt
+                        final_prompt = prompt
+                        if prompt_constraint:
+                            final_prompt = f"{prompt}, {prompt_constraint}"
+                        inputs['text'] = final_prompt
 
             # Empty Latent Image — inject dimensions
             if class_type == 'EmptyLatentImage':
@@ -241,9 +275,14 @@ class ComfyUIClient:
                     inputs['height'] = height
 
             # Load Image node — inject input image path
-            if class_type == 'LoadImage' and input_image:
-                if 'image' in inputs:
-                    inputs['image'] = input_image
+            if class_type == 'LoadImage':
+                meta_title = node.get('_meta', {}).get('title', '').lower()
+                if 'control' in meta_title or 'canny' in meta_title or 'edge' in meta_title:
+                    if control_image and 'image' in inputs:
+                        inputs['image'] = control_image
+                else:
+                    if input_image and 'image' in inputs:
+                        inputs['image'] = input_image
 
             # CheckpointLoaderSimple — select model name
             if class_type == 'CheckpointLoaderSimple':
@@ -580,6 +619,8 @@ class ComfyUIClient:
         steps: int = 20,
         cfg_scale: float = 7.0,
         denoise: float = 1.0,
+        geometry_lock_mode: str = 'accurate',
+        control_image: str | None = None,
         comfyui_output_dir: str | None = None,
         on_progress=None,
     ) -> list[str]:
@@ -599,6 +640,7 @@ class ComfyUIClient:
             steps: Sampling steps.
             cfg_scale: CFG guidance scale.
             denoise: Denoising strength.
+            geometry_lock_mode: Geometry lock mode.
             comfyui_output_dir: ComfyUI output directory for path resolution.
             on_progress: Optional callback(current, total) for progress updates.
 
@@ -627,6 +669,8 @@ class ComfyUIClient:
             steps=steps,
             cfg_scale=cfg_scale,
             denoise=denoise,
+            geometry_lock_mode=geometry_lock_mode,
+            control_image=control_image,
         )
 
         # Step 3: Submit workflow

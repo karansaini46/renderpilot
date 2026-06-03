@@ -18,8 +18,15 @@ import {
   Image as ImageIcon,
   CheckCircle2,
   XCircle,
-  Star
+  Star,
+  Sparkles,
+  Lock,
+  Unlock,
+  Plus,
+  Database,
+  Edit3
 } from 'lucide-react';
+import { STYLE_PRESETS } from '../../../lib/style-presets';
 
 interface ProjectFile {
   id: string;
@@ -36,7 +43,8 @@ interface Render {
   style: string;
   status: string;
   rating: number;
-  previewUrl: string;
+  previewUrl: string | null;
+  finalUrl: string | null;
   createdAt: string;
   baseDownloadUrl?: string;
   feedbackDetails?: Record<string, any>;
@@ -47,9 +55,12 @@ interface RenderJob {
   id: string;
   projectId: string;
   workerId: string | null;
-  status: 'queued' | 'claimed' | 'processing' | 'completed' | 'failed' | 'cancelled';
+  status: 'queued' | 'claimed' | 'processing' | 'completed' | 'failed' | 'cancelled' | 'needs_review';
   progress: number;
   errorMessage: string | null;
+  retryCount: number;
+  maxRetries: number;
+  failedAt: string | null;
   settingsJson: string | null;
   createdAt: string;
   completedAt: string | null;
@@ -80,10 +91,11 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'renders' | 'files'>('files');
+  const [activeTab, setActiveTab] = useState<'renders' | 'files' | 'materials'>('files');
 
   const [jobs, setJobs] = useState<RenderJob[]>([]);
   const [isLaunchingJob, setIsLaunchingJob] = useState(false);
+  const [isUpscalingRenderId, setIsUpscalingRenderId] = useState<string | null>(null);
   const [selectedJob, setSelectedJob] = useState<RenderJob | null>(null);
   const [jobEvents, setJobEvents] = useState<any[]>([]);
   const [isLoadingEvents, setIsLoadingEvents] = useState(false);
@@ -107,6 +119,26 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
   const [feedbackRejections, setFeedbackRejections] = useState<string[]>([]);
   const [feedbackNotes, setFeedbackNotes] = useState('');
   const [isSavingFeedback, setIsSavingFeedback] = useState(false);
+
+  // Launch Modal State
+  const [isLaunchModalOpen, setIsLaunchModalOpen] = useState(false);
+  const [selectedStylePreset, setSelectedStylePreset] = useState('style_mod_lux_ext');
+  const [selectedSceneType, setSelectedSceneType] = useState('Exterior');
+  const [selectedProjectType, setSelectedProjectType] = useState('Residential');
+  const [selectedMaterials, setSelectedMaterials] = useState<string[]>([]);
+  const [selectedGeometryLockMode, setSelectedGeometryLockMode] = useState('accurate');
+  const [forceRegenerate, setForceRegenerate] = useState(false);
+
+  // Material Mapping State
+  const [materialMappings, setMaterialMappings] = useState<any[]>([]);
+  const [materialSuggestions, setMaterialSuggestions] = useState<any[]>([]);
+  const [isLoadingMaterials, setIsLoadingMaterials] = useState(false);
+  const [newZoneName, setNewZoneName] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('wall');
+  const [newFinish, setNewFinish] = useState('');
+  const [newLocked, setNewLocked] = useState(false);
+  const [isSavingMaterial, setIsSavingMaterial] = useState(false);
+  const [editingMaterialId, setEditingMaterialId] = useState<string | null>(null);
 
   const checkWorkerAvailability = async () => {
     try {
@@ -145,20 +177,38 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
         );
         setFilesList(resolvedFiles);
 
-        // Resolve download URLs for all renders to populate previewUrl and baseDownloadUrl, and load feedback
+        // Resolve download URLs for all renders to populate previewUrl, finalUrl, and baseDownloadUrl, and load feedback
         const resolvedRenders = await Promise.all(
           (data.renders || []).map(async (render: any) => {
-            let previewUrl = render.finalImageUrl;
+            let resolvedPreviewUrl = null;
+            let resolvedFinalUrl = null;
             let baseDownloadUrl = null;
             
-            try {
-              const urlRes = await fetch(`/api/storage/download-url?key=${encodeURIComponent(render.finalImageUrl)}`);
-              if (urlRes.ok) {
-                const urlData = await urlRes.json();
-                previewUrl = urlData.url;
+            // Resolve previewUrl (or fallback to finalImageUrl if previewUrl not in DB yet)
+            const previewKey = render.previewUrl || render.finalImageUrl;
+            if (previewKey) {
+              try {
+                const urlRes = await fetch(`/api/storage/download-url?key=${encodeURIComponent(previewKey)}`);
+                if (urlRes.ok) {
+                  const urlData = await urlRes.json();
+                  resolvedPreviewUrl = urlData.url;
+                }
+              } catch (err) {
+                console.error('Failed to get download URL for render preview:', err);
               }
-            } catch (err) {
-              console.error('Failed to get download URL for render:', err);
+            }
+
+            // Resolve finalUrl
+            if (render.finalUrl) {
+              try {
+                const urlRes = await fetch(`/api/storage/download-url?key=${encodeURIComponent(render.finalUrl)}`);
+                if (urlRes.ok) {
+                  const urlData = await urlRes.json();
+                  resolvedFinalUrl = urlData.url;
+                }
+              } catch (err) {
+                console.error('Failed to get download URL for render final:', err);
+              }
             }
 
             if (render.baseImageUrl) {
@@ -191,7 +241,8 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
 
             return {
               ...render,
-              previewUrl,
+              previewUrl: resolvedPreviewUrl,
+              finalUrl: resolvedFinalUrl,
               baseDownloadUrl,
               status,
               style: render.styleId ? render.styleId.replace('style_', '').replace(/_/g, ' ') : 'Custom Style',
@@ -243,9 +294,110 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
     setJobEvents([]);
   };
 
+  const fetchMaterials = async () => {
+    setIsLoadingMaterials(true);
+    try {
+      const res = await fetch(`/api/projects/${id}/materials?include_suggestions=true`);
+      if (res.ok) {
+        const data = await res.json();
+        setMaterialMappings(data.mappings || []);
+        setMaterialSuggestions(data.suggestions || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch material mappings:', err);
+    } finally {
+      setIsLoadingMaterials(false);
+    }
+  };
+
+  const handleSaveMaterialMapping = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedCategory || !newFinish.trim()) {
+      alert('Please fill out the category and desired finish.');
+      return;
+    }
+
+    setIsSavingMaterial(true);
+    try {
+      const res = await fetch(`/api/projects/${id}/materials`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: editingMaterialId || undefined,
+          objectName: newZoneName.trim() || selectedCategory,
+          detectedClass: selectedCategory,
+          selectedMaterial: newFinish.trim(),
+          locked: newLocked
+        })
+      });
+
+      if (res.ok) {
+        const saved = await res.json();
+        if (editingMaterialId) {
+          setMaterialMappings(materialMappings.map(m => m.id === editingMaterialId ? saved : m));
+        } else {
+          setMaterialMappings([...materialMappings, saved]);
+        }
+        // Reset form
+        setNewZoneName('');
+        setSelectedCategory('wall');
+        setNewFinish('');
+        setNewLocked(false);
+        setEditingMaterialId(null);
+      } else {
+        const err = await res.json();
+        alert(err.error || 'Failed to save material mapping');
+      }
+    } catch (err) {
+      console.error('Error saving material:', err);
+    } finally {
+      setIsSavingMaterial(false);
+    }
+  };
+
+  const handleEditMaterial = (mapping: any) => {
+    setEditingMaterialId(mapping.id);
+    setNewZoneName(mapping.objectName);
+    setSelectedCategory(mapping.detectedClass);
+    setNewFinish(mapping.selectedMaterial);
+    setNewLocked(mapping.locked);
+  };
+
+  const handleDeleteMaterial = async (mappingId: string) => {
+    if (!confirm('Are you sure you want to delete this material mapping?')) return;
+
+    try {
+      const res = await fetch(`/api/projects/${id}/materials`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: mappingId,
+          action: 'delete'
+        })
+      });
+
+      if (res.ok) {
+        setMaterialMappings(materialMappings.filter(m => m.id !== mappingId));
+      } else {
+        alert('Failed to delete mapping');
+      }
+    } catch (err) {
+      console.error('Error deleting material:', err);
+    }
+  };
+
+  const handleApplySuggestion = (suggestion: any) => {
+    setNewZoneName(`${suggestion.category.charAt(0).toUpperCase() + suggestion.category.slice(1)} Zone`);
+    setSelectedCategory(suggestion.category);
+    setNewFinish(suggestion.finish);
+    setNewLocked(true);
+    setEditingMaterialId(null);
+  };
+
   useEffect(() => {
     fetchProjectData();
     checkWorkerAvailability();
+    fetchMaterials();
   }, [id]);
 
   useEffect(() => {
@@ -260,12 +412,70 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
     return () => clearInterval(interval);
   }, [jobs, isDrawerOpen, selectedJob]);
 
-  const handleLaunchRender = async () => {
+  const getUpscaleJobForRender = (renderId: string) => {
+    return jobs.find(job => {
+      if (['completed', 'failed', 'cancelled'].includes(job.status)) return false;
+      try {
+        const settings = JSON.parse(job.settingsJson || '{}');
+        return (settings.job_type === 'upscale_selected' || settings.jobType === 'upscale_selected') && settings.renderId === renderId;
+      } catch {
+        return false;
+      }
+    });
+  };
+
+  const handleUpscaleSelected = async (renderId: string) => {
+    if (!project) return;
+    setIsUpscalingRenderId(renderId);
+    try {
+      const res = await fetch('/api/jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId: id,
+          settingsJson: JSON.stringify({
+            job_type: 'upscale_selected',
+            renderId: renderId
+          })
+        })
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || 'Failed to queue upscale job');
+      }
+
+      await fetchProjectData();
+    } catch (err: any) {
+      console.error('[Upscale Error]:', err.message);
+      alert(err.message || 'An error occurred while queueing the upscale job.');
+    } finally {
+      setIsUpscalingRenderId(null);
+    }
+  };
+
+  const openLaunchModal = () => {
     if (!project) return;
     if (filesList.length === 0) {
       alert('Cannot launch render job. Please upload at least one image input file first.');
       return;
     }
+    
+    // Pre-populate settings from project metadata
+    const matchingPreset = STYLE_PRESETS.find(
+      s => s.id === project.stylePreference || s.name.toLowerCase() === (project.stylePreference || '').toLowerCase()
+    );
+    
+    setSelectedStylePreset(matchingPreset?.id || 'style_mod_lux_ext');
+    setSelectedSceneType(project.sceneType || 'Exterior');
+    setSelectedProjectType(project.projectType || 'Residential');
+    setSelectedMaterials([]);
+    setSelectedGeometryLockMode(matchingPreset?.defaultGeometryLockMode || 'accurate');
+    setIsLaunchModalOpen(true);
+  };
+
+  const handleLaunchRenderConfirm = async () => {
+    if (!project) return;
     
     setIsLaunchingJob(true);
     try {
@@ -274,19 +484,29 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           projectId: id,
+          forceRegenerate: forceRegenerate,
           settingsJson: JSON.stringify({
-            stylePreference: project.stylePreference,
-            sceneType: project.sceneType,
-            projectType: project.projectType
+            styleId: selectedStylePreset,
+            sceneType: selectedSceneType,
+            projectType: selectedProjectType,
+            materialChoices: selectedMaterials,
+            geometryLockMode: selectedGeometryLockMode
           })
         })
       });
 
+      const responseData = await res.json();
+
       if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.error || 'Failed to queue render job');
+        throw new Error(responseData.error || 'Failed to queue render job');
       }
 
+      // Handle cache hit: API returns 200 with cached render
+      if (responseData.cached) {
+        alert('Cache hit! An identical render already exists. Showing existing result. Use "Bypass Cache" to force a new render.');
+      }
+
+      setIsLaunchModalOpen(false);
       await fetchProjectData();
     } catch (err: any) {
       console.error('[Launch Job Error]:', err.message);
@@ -538,7 +758,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
             <p className="text-slate-400 text-sm mt-0.5">Style Preference: {project.stylePreference}</p>
           </div>
           <button
-            onClick={handleLaunchRender}
+            onClick={openLaunchModal}
             disabled={isLaunchingJob}
             className="inline-flex items-center space-x-2 bg-indigo-600 hover:bg-indigo-500 text-slate-100 text-sm font-semibold px-4.5 py-2.5 rounded-lg shadow-lg hover:shadow-indigo-500/20 transform transition-all duration-200 active:scale-95 w-fit disabled:opacity-50 disabled:cursor-not-allowed"
           >
@@ -570,6 +790,12 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                 className={`px-4 py-4 text-xs font-semibold uppercase tracking-wider border-b-2 transition-all ${activeTab === 'renders' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
               >
                 Render Outputs ({(project.renders || []).length})
+              </button>
+              <button
+                onClick={() => setActiveTab('materials')}
+                className={`px-4 py-4 text-xs font-semibold uppercase tracking-wider border-b-2 transition-all ${activeTab === 'materials' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
+              >
+                Material Board ({materialMappings.length})
               </button>
             </div>
 
@@ -626,7 +852,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
 
                   {/* File Lists / Previews grid */}
                   <div className="space-y-4 pt-4 border-t border-slate-900/60">
-                    <h3 className="text-xs font-bold text-slate-450 uppercase tracking-wider">Uploaded Assets</h3>
+                    <h3 className="text-xs font-bold text-slate-455 uppercase tracking-wider">Uploaded Assets</h3>
                     
                     {filesList.length === 0 ? (
                       <p className="text-slate-500 text-xs italic">No assets uploaded yet.</p>
@@ -661,7 +887,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                                 </div>
                                 <button
                                   onClick={() => handleDeleteFile(file.id, file.fileUrl)}
-                                  className="p-1.5 text-slate-500 hover:text-rose-400 rounded hover:bg-slate-900/50 transition-all"
+                                  className="p-1.5 text-slate-500 hover:text-rose-450 rounded hover:bg-slate-900/50 transition-all"
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />
                                 </button>
@@ -674,11 +900,11 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                   </div>
 
                 </div>
-              ) : (
+              ) : activeTab === 'renders' ? (
                 /* Renders outputs tab */
                 (project.renders || []).length === 0 ? (
                   <div className="text-center py-12">
-                    <Sliders className="h-10 w-10 text-slate-600 mx-auto" />
+                    <Sliders className="h-10 w-10 text-slate-650 mx-auto" />
                     <p className="text-slate-400 text-sm mt-3">No images rendered yet. Click &apos;Launch Render Job&apos; to begin.</p>
                   </div>
                 ) : (
@@ -706,15 +932,20 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                             <div className="relative overflow-hidden h-full bg-slate-950">
                               {/* eslint-disable-next-line @next/next/no-img-element */}
                               <img 
-                                src={render.previewUrl} 
+                                src={render.finalUrl || render.previewUrl || ''} 
                                 alt={`Seed: ${render.seed}`} 
                                 className="object-cover w-full h-full"
                               />
                               <span className="absolute bottom-2 right-2 px-1.5 py-0.5 bg-indigo-950/80 text-indigo-400 text-[8px] font-bold rounded uppercase tracking-wider">Render Output</span>
+
+                              {/* Preview / Upscaled Badge */}
+                              <span className={`absolute top-2.5 left-2.5 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider shadow-sm border ${render.finalUrl ? 'bg-emerald-950/95 text-emerald-400 border-emerald-500/30' : 'bg-amber-950/95 text-amber-400 border-amber-500/30'}`}>
+                                {render.finalUrl ? 'Upscaled' : 'Preview'}
+                              </span>
                             </div>
                           </div>
                           <div className="absolute top-2.5 right-2.5">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${render.status === 'approved' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/25' : render.status === 'rejected' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/25' : 'bg-slate-800 text-slate-450 border border-slate-700'}`}>
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${render.status === 'approved' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/25' : render.status === 'rejected' ? 'bg-rose-500/10 text-rose-450 border border-rose-500/25' : 'bg-slate-800 text-slate-450 border border-slate-700'}`}>
                               {render.status}
                             </span>
                           </div>
@@ -729,20 +960,274 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                             <p className="text-xs text-slate-500 mt-1">Style: {render.style}</p>
                           </div>
 
-                          <div className="flex items-center gap-2 pt-2 border-t border-slate-900">
-                            <button
-                              onClick={() => handleOpenReviewDrawer(render)}
-                              className="flex-1 inline-flex items-center justify-center space-x-1.5 bg-indigo-600 hover:bg-indigo-500 text-slate-100 text-xs font-semibold py-2.5 rounded-lg transition-colors shadow-md"
-                            >
-                              <Sliders className="h-3.5 w-3.5" />
-                              <span>{render.status === 'pending' ? 'Review & Rate' : 'View Feedback'}</span>
-                            </button>
-                          </div>
+                          {(() => {
+                            const upscaleJob = getUpscaleJobForRender(render.id);
+                            return (
+                              <div className="flex items-center gap-2 pt-2 border-t border-slate-900 w-full">
+                                <button
+                                  onClick={() => handleOpenReviewDrawer(render)}
+                                  className="flex-1 inline-flex items-center justify-center space-x-1.5 bg-indigo-600 hover:bg-indigo-500 text-slate-100 text-xs font-semibold py-2.5 rounded-lg transition-colors shadow-md"
+                                >
+                                  <Sliders className="h-3.5 w-3.5" />
+                                  <span>{render.status === 'pending' ? 'Review' : 'Feedback'}</span>
+                                </button>
+
+                                {upscaleJob ? (
+                                  <button
+                                    disabled
+                                    className="flex-1 inline-flex items-center justify-center space-x-1.5 bg-slate-900 text-slate-500 text-xs font-semibold py-2.5 rounded-lg border border-slate-850 cursor-not-allowed"
+                                  >
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    <span>
+                                      {upscaleJob.status === 'queued' ? 'Queued' : `${upscaleJob.progress}%`}
+                                    </span>
+                                  </button>
+                                ) : render.finalUrl ? (
+                                  <div className="flex-1 inline-flex items-center justify-center space-x-1.5 bg-emerald-950/40 text-emerald-400 text-xs font-semibold py-2.5 rounded-lg border border-emerald-500/20">
+                                    <Check className="h-3.5 w-3.5" />
+                                    <span>Upscaled</span>
+                                  </div>
+                                ) : (
+                                  <button
+                                    disabled={isUpscalingRenderId !== null}
+                                    onClick={() => handleUpscaleSelected(render.id)}
+                                    className="flex-1 inline-flex items-center justify-center space-x-1.5 bg-indigo-950 hover:bg-indigo-900 text-indigo-400 text-xs font-semibold py-2.5 rounded-lg border border-indigo-500/20 transition-colors shadow-md disabled:opacity-50"
+                                  >
+                                    <Sparkles className="h-3.5 w-3.5" />
+                                    <span>Upscale</span>
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </div>
                       </div>
                     ))}
                   </div>
                 )
+              ) : (
+                /* Material board tab */
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                  {/* Left Column: Form Editor */}
+                  <div className="bg-slate-950 border border-slate-900 rounded-xl p-5 space-y-4 h-fit">
+                    <h3 className="text-sm font-bold text-slate-200">
+                      {editingMaterialId ? 'Edit Material Specification' : 'Add Material Specification'}
+                    </h3>
+                    <form onSubmit={handleSaveMaterialMapping} className="space-y-4">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5">
+                          Zone / Object Name
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Dining floor, East window frame"
+                          value={newZoneName}
+                          onChange={(e) => setNewZoneName(e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-205 placeholder-slate-600 focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-4">
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5">
+                            Material Category
+                          </label>
+                          <select
+                            value={selectedCategory}
+                            onChange={(e) => setSelectedCategory(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-250 focus:outline-none focus:border-indigo-500"
+                          >
+                            {['wall', 'floor', 'ceiling', 'glass', 'frame', 'wood', 'stone', 'concrete', 'metal', 'vegetation', 'furniture', 'sky'].map((cat) => (
+                              <option key={cat} value={cat}>{cat.toUpperCase()}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5">
+                          Desired Finish / Material Type
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. polished walnut, brushed travertine, clear double-glazed"
+                          value={newFinish}
+                          onChange={(e) => setNewFinish(e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-205 placeholder-slate-600 focus:outline-none focus:border-indigo-500"
+                          required
+                        />
+                      </div>
+
+                      <div className="flex items-center space-x-2.5 pt-2">
+                        <input
+                          type="checkbox"
+                          id="locked-checkbox"
+                          checked={newLocked}
+                          onChange={(e) => setNewLocked(e.target.checked)}
+                          className="rounded border-slate-800 bg-slate-900 text-indigo-600 focus:ring-0 cursor-pointer h-4 w-4"
+                        />
+                        <label htmlFor="locked-checkbox" className="text-xs text-slate-300 font-medium select-none cursor-pointer flex items-center space-x-1.5">
+                          <Lock className="h-3.5 w-3.5 text-indigo-400" />
+                          <span>Lock Composition Mapping</span>
+                        </label>
+                      </div>
+                      <p className="text-[10px] text-slate-500 leading-normal">
+                        When locked, this finish details description is automatically merged into the rendering prompts to enforce consistency.
+                      </p>
+
+                      <div className="flex items-center gap-2 pt-2">
+                        <button
+                          type="submit"
+                          disabled={isSavingMaterial}
+                          className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2.5 rounded-lg transition-colors flex items-center justify-center space-x-1.5 disabled:opacity-50"
+                        >
+                          {isSavingMaterial ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : editingMaterialId ? (
+                            <Check className="h-3.5 w-3.5" />
+                          ) : (
+                            <Plus className="h-3.5 w-3.5" />
+                          )}
+                          <span>{editingMaterialId ? 'Save Changes' : 'Add to Specification'}</span>
+                        </button>
+                        {editingMaterialId && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingMaterialId(null);
+                              setNewZoneName('');
+                              setSelectedCategory('wall');
+                              setNewFinish('');
+                              setNewLocked(false);
+                            }}
+                            className="bg-slate-800 hover:bg-slate-750 text-slate-350 text-xs font-bold py-2.5 px-3.5 rounded-lg transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        )}
+                      </div>
+                    </form>
+                  </div>
+
+                  {/* Right Column: List */}
+                  <div className="lg:col-span-2 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xs font-bold text-slate-455 uppercase tracking-wider">
+                        Active Material Board Specification ({materialMappings.length})
+                      </h3>
+                      {isLoadingMaterials && <Loader2 className="h-3.5 w-3.5 text-indigo-400 animate-spin" />}
+                    </div>
+
+                    {materialSuggestions.length > 0 && (
+                      <div className="bg-slate-900/20 border border-slate-900/60 rounded-xl p-5 space-y-4">
+                        <div className="flex items-center space-x-2">
+                          <Sparkles className="h-4 w-4 text-indigo-400" />
+                          <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+                            Suggested Finishes from Past Projects
+                          </h4>
+                        </div>
+                        <p className="text-[10px] text-slate-500">
+                          Based on other projects using <strong>{project?.projectType} + {project?.sceneType} + {project?.stylePreference}</strong>. Click any suggestion to load it into the editor.
+                        </p>
+                        
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                          {materialSuggestions.map((suggestion) => (
+                            <button
+                              key={suggestion.id}
+                              type="button"
+                              onClick={() => handleApplySuggestion(suggestion)}
+                              className="text-left bg-slate-950 hover:bg-slate-900 border border-slate-900 hover:border-slate-800 rounded-xl p-3.5 flex items-center justify-between group transition-all duration-300"
+                            >
+                              <div className="min-w-0 pr-3">
+                                <span className="inline-block px-1.5 py-0.5 rounded text-[8px] font-extrabold uppercase bg-indigo-950/40 text-indigo-400 border border-indigo-500/10 mb-1.5">
+                                  {suggestion.category}
+                                </span>
+                                <h5 className="text-xs font-semibold text-slate-300 italic truncate group-hover:text-white transition-colors">
+                                  &ldquo;{suggestion.finish}&rdquo;
+                                </h5>
+                              </div>
+                              <div className="text-right shrink-0">
+                                <span className="block text-[8px] font-bold text-slate-550 uppercase tracking-wider">
+                                  Used {suggestion.successCount}x
+                                </span>
+                                <span className="inline-flex items-center text-[10px] text-indigo-400 font-semibold mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <span>Apply</span>
+                                  <Plus className="h-3 w-3 ml-0.5" />
+                                </span>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {materialMappings.length === 0 ? (
+                      <div className="text-center py-12 border border-dashed border-slate-900 rounded-xl bg-slate-950/20">
+                        <Database className="h-8 w-8 text-slate-700 mx-auto mb-2" />
+                        <p className="text-slate-500 text-xs italic">No materials specified for this project yet.</p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {materialMappings.map((mapping) => (
+                          <div 
+                            key={mapping.id}
+                            className={`bg-slate-950 border rounded-xl p-4.5 flex flex-col justify-between space-y-3.5 relative transition-all duration-300 ${
+                              mapping.locked 
+                                ? 'border-indigo-500/20 shadow-[0_0_12px_rgba(99,102,241,0.03)]' 
+                                : 'border-slate-900'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <h4 className="text-xs font-bold text-slate-200 truncate">{mapping.objectName}</h4>
+                                <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[8px] font-extrabold uppercase bg-slate-900 text-slate-400 border border-slate-800">
+                                  {mapping.detectedClass}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center space-x-1 shrink-0">
+                                {mapping.locked ? (
+                                  <span className="flex items-center space-x-1 px-2 py-0.5 bg-indigo-950/80 border border-indigo-500/25 rounded text-[8px] font-bold text-indigo-400 uppercase tracking-wider">
+                                    <Lock className="h-2.5 w-2.5" />
+                                    <span>Locked</span>
+                                  </span>
+                                ) : (
+                                  <span className="flex items-center space-x-1 px-2 py-0.5 bg-slate-900 border border-slate-800 rounded text-[8px] font-bold text-slate-500 uppercase tracking-wider">
+                                    <Unlock className="h-2.5 w-2.5" />
+                                    <span>Unlocked</span>
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="bg-slate-900/40 border border-slate-900/60 rounded-lg p-2.5">
+                              <span className="block text-[8px] text-slate-550 font-bold uppercase tracking-wider mb-0.5">Finish / Details</span>
+                              <span className="text-xs font-medium text-slate-300 italic">&ldquo;{mapping.selectedMaterial}&rdquo;</span>
+                            </div>
+
+                            <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-900/60">
+                              <button
+                                onClick={() => handleEditMaterial(mapping)}
+                                className="inline-flex items-center space-x-1 text-slate-500 hover:text-indigo-400 text-[10px] font-bold uppercase tracking-wider transition-colors"
+                              >
+                                <Edit3 className="h-3 w-3" />
+                                <span>Edit</span>
+                              </button>
+                              <span className="text-slate-800">|</span>
+                              <button
+                                onClick={() => handleDeleteMaterial(mapping.id)}
+                                className="inline-flex items-center space-x-1 text-slate-550 hover:text-rose-450 text-[10px] font-bold uppercase tracking-wider transition-colors"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                                <span>Delete</span>
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
           </div>
@@ -796,7 +1281,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                   >
                     <div className="flex items-center justify-between">
                       <span className="text-[11px] font-bold text-slate-300 truncate max-w-[120px] group-hover:text-indigo-400 transition-colors">
-                        {job.id.replace('job_', '#')}
+                        {job.id.replace('job_', '#')} {job.retryCount > 0 && <span className="text-amber-400 font-bold ml-1">(R{job.retryCount})</span>}
                       </span>
                       {job.status === 'queued' && (
                         <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-slate-800 text-slate-400 border border-slate-700">Queued</span>
@@ -809,6 +1294,9 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                       )}
                       {job.status === 'completed' && (
                         <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">Completed</span>
+                      )}
+                      {job.status === 'needs_review' && (
+                        <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-amber-500/10 text-amber-400 border border-amber-500/25">Needs Review</span>
                       )}
                       {(job.status === 'failed' || job.status === 'cancelled') && (
                         <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-rose-500/10 text-rose-400 border border-rose-500/25">Failed</span>
@@ -908,11 +1396,13 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                     <div className="relative overflow-hidden h-full bg-slate-950">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img 
-                        src={selectedReviewRender.previewUrl} 
+                        src={selectedReviewRender.finalUrl || selectedReviewRender.previewUrl || ''} 
                         alt="Render Output" 
                         className="object-cover w-full h-full"
                       />
-                      <span className="absolute bottom-2 right-2 px-1.5 py-0.5 bg-indigo-950/80 text-indigo-400 text-[8px] font-bold rounded uppercase tracking-wider">Render Variation</span>
+                      <span className="absolute bottom-2 right-2 px-1.5 py-0.5 bg-indigo-950/80 text-indigo-400 text-[8px] font-bold rounded uppercase tracking-wider">
+                        {selectedReviewRender.finalUrl ? 'Upscaled Output' : 'Preview Output'}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -1106,6 +1596,9 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                     {selectedJob.status === 'completed' && (
                       <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 uppercase tracking-wider">Completed</span>
                     )}
+                    {selectedJob.status === 'needs_review' && (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/25 uppercase tracking-wider">Needs Review</span>
+                    )}
                     {(selectedJob.status === 'failed' || selectedJob.status === 'cancelled') && (
                       <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/25 uppercase tracking-wider">Failed</span>
                     )}
@@ -1144,10 +1637,22 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                       <span className="text-slate-500">Queued At</span>
                       <span>{new Date(selectedJob.createdAt).toLocaleString()}</span>
                     </div>
+                    {selectedJob.retryCount > 0 && (
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Retry Attempts</span>
+                        <span className="text-amber-400 font-semibold">{selectedJob.retryCount} / {selectedJob.maxRetries}</span>
+                      </div>
+                    )}
                     {selectedJob.completedAt && (
                       <div className="flex justify-between">
                         <span className="text-slate-500">Finished At</span>
                         <span>{new Date(selectedJob.completedAt).toLocaleString()}</span>
+                      </div>
+                    )}
+                    {selectedJob.failedAt && (
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Failed At</span>
+                        <span>{new Date(selectedJob.failedAt).toLocaleString()}</span>
                       </div>
                     )}
                     {selectedJob.errorMessage && (
@@ -1200,6 +1705,277 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                   </button>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 4. Simplified Launch Render Preset Engine Modal */}
+      {isLaunchModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          {/* Backdrop blur overlay */}
+          <div 
+            className="absolute inset-0 bg-black/75 backdrop-blur-sm"
+            onClick={() => setIsLaunchModalOpen(false)}
+          />
+
+          <div className="relative w-full max-w-4xl bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl animate-in fade-in zoom-in duration-200 text-slate-100">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-5 border-b border-slate-800 bg-slate-950/40">
+              <div className="flex items-center space-x-2.5">
+                <Sparkles className="h-5 w-5 text-indigo-400 animate-pulse" />
+                <h2 className="text-lg font-extrabold tracking-wider bg-gradient-to-r from-white to-slate-300 bg-clip-text text-transparent">
+                  Launch Architectural Render Job
+                </h2>
+              </div>
+              <button 
+                onClick={() => setIsLaunchModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-100 hover:bg-slate-850 rounded transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto max-h-[80vh] space-y-6">
+              {/* Step 1: Select Style Preset Cards */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-3">
+                  1. Select Visual Preset Style
+                </label>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {STYLE_PRESETS.map((style) => {
+                    const isSelected = selectedStylePreset === style.id;
+                    return (
+                      <div
+                        key={style.id}
+                        onClick={() => {
+                          setSelectedStylePreset(style.id);
+                          setSelectedGeometryLockMode(style.defaultGeometryLockMode);
+                        }}
+                        className={`flex flex-col p-4 rounded-xl border cursor-pointer text-left transition-all duration-200 select-none group ${
+                          isSelected 
+                            ? 'bg-indigo-600/10 border-indigo-500/80 shadow-[0_0_15px_rgba(99,102,241,0.1)]' 
+                            : 'bg-slate-950/40 border-slate-850 hover:border-slate-800 hover:bg-slate-900/40'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3 mb-1.5">
+                          <h4 className={`text-xs font-bold transition-colors ${isSelected ? 'text-indigo-400' : 'text-slate-200 group-hover:text-slate-100'}`}>
+                            {style.name}
+                          </h4>
+                          {isSelected && (
+                            <span className="p-0.5 rounded-full bg-indigo-500 text-slate-950 flex items-center justify-center shrink-0">
+                              <Check className="h-3 w-3" />
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-slate-450 leading-relaxed mb-3 flex-1 font-medium">
+                          {style.description}
+                        </p>
+                        
+                        <div className="flex items-center justify-between mt-auto pt-2 border-t border-slate-900/60">
+                          <span className="text-[8px] font-bold text-slate-500 uppercase tracking-wider">
+                            Geometry
+                          </span>
+                          <span className={`px-1.5 py-0.5 rounded text-[8px] font-extrabold uppercase tracking-wider ${
+                            style.defaultGeometryLockMode === 'accurate' || style.defaultGeometryLockMode === 'technical'
+                              ? 'bg-indigo-950/80 text-indigo-400 border border-indigo-500/20' 
+                              : 'bg-slate-900 text-slate-400 border border-slate-800'
+                          }`}>
+                            {style.defaultGeometryLockMode}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Step 2: Dropdowns for Simple Metadata options */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">
+                    2. Scene Type Environment
+                  </label>
+                  <select
+                    value={selectedSceneType}
+                    onChange={(e) => setSelectedSceneType(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-850 text-xs text-slate-205 p-2.5 rounded-lg focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="Exterior">Exterior Perspective</option>
+                    <option value="Interior">Interior Perspective</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">
+                    3. Project Typology
+                  </label>
+                  <select
+                    value={selectedProjectType}
+                    onChange={(e) => setSelectedProjectType(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-850 text-xs text-slate-205 p-2.5 rounded-lg focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="Residential">Residential</option>
+                    <option value="Commercial">Commercial</option>
+                    <option value="Industrial">Industrial</option>
+                    <option value="Landscape">Landscape / Urban</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Step 4: Select Geometry Lock Mode */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-3">
+                  4. Select Geometry Lock Mode
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {[
+                    {
+                      id: 'creative',
+                      name: 'Creative',
+                      desc: 'More visual freedom, lower composition constraint. Best for early concept iteration.',
+                      badge: 'High Freedom'
+                    },
+                    {
+                      id: 'balanced',
+                      name: 'Balanced',
+                      desc: 'Preserves composition outline while allowing some style/material modifications.',
+                      badge: 'Medium Lock'
+                    },
+                    {
+                      id: 'accurate',
+                      name: 'Accurate (Recommended)',
+                      desc: 'Preserves spatial composition tightly. Ideal default for standard client renders.',
+                      badge: 'Strong Lock'
+                    },
+                    {
+                      id: 'technical',
+                      name: 'Technical',
+                      desc: 'Highest contour alignment, lowest detail variance. Best for blueprints/precise mockups.',
+                      badge: 'Max Lock'
+                    }
+                  ].map((mode) => {
+                    const isSelected = selectedGeometryLockMode === mode.id;
+                    return (
+                      <div
+                        key={mode.id}
+                        onClick={() => setSelectedGeometryLockMode(mode.id)}
+                        className={`flex flex-col p-4.5 rounded-xl border cursor-pointer text-left transition-all duration-200 select-none group ${
+                          isSelected 
+                            ? 'bg-indigo-600/10 border-indigo-500/80 shadow-[0_0_15px_rgba(99,102,241,0.1)]' 
+                            : 'bg-slate-950/40 border-slate-850 hover:border-slate-800 hover:bg-slate-900/40'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3 mb-1.5">
+                          <h4 className={`text-xs font-bold transition-colors ${isSelected ? 'text-indigo-400' : 'text-slate-200 group-hover:text-slate-100'}`}>
+                            {mode.name}
+                          </h4>
+                          {isSelected && (
+                            <span className="p-0.5 rounded-full bg-indigo-500 text-slate-950 flex items-center justify-center shrink-0">
+                              <Check className="h-3 w-3" />
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-slate-450 leading-relaxed mb-3 flex-1 font-medium">
+                          {mode.desc}
+                        </p>
+                        <div className="flex items-center justify-between mt-auto pt-2 border-t border-slate-900/60">
+                          <span className="text-[8px] font-bold text-slate-500 uppercase tracking-wider">Constraint</span>
+                          <span className={`px-1.5 py-0.5 rounded text-[8px] font-extrabold uppercase tracking-wider ${
+                            isSelected 
+                              ? 'bg-indigo-950/80 text-indigo-400 border border-indigo-500/20' 
+                              : 'bg-slate-900 text-slate-400 border border-slate-800'
+                          }`}>
+                            {mode.badge}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Step 5: Click-to-select Material Vibe tags */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2.5">
+                  5. Add Material Accent Vibes
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {['Glass & Steel', 'Concrete Minimalism', 'Warm Oak Wood', 'Brushed Brass', 'Travertine Stone', 'Polished Terrazzo', 'Exposed Brick', 'Matte Black Metal'].map((mat) => {
+                    const isSelected = selectedMaterials.includes(mat);
+                    return (
+                      <button
+                        key={mat}
+                        type="button"
+                        onClick={() => {
+                          if (isSelected) {
+                            setSelectedMaterials(selectedMaterials.filter(m => m !== mat));
+                          } else {
+                            setSelectedMaterials([...selectedMaterials, mat]);
+                          }
+                        }}
+                        className={`px-3 py-1.5 rounded-lg text-[10px] font-bold border transition-all duration-150 uppercase tracking-wider ${
+                          isSelected 
+                            ? 'bg-indigo-600/10 text-indigo-400 border-indigo-500/30' 
+                            : 'bg-slate-950/40 text-slate-400 border-slate-850 hover:text-slate-350 hover:border-slate-750'
+                        }`}
+                      >
+                        {mat}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+              {/* Step 6: Bypass Cache option */}
+              <div className="bg-slate-950/40 border border-slate-850 rounded-xl p-4.5 flex items-center justify-between">
+                <div>
+                  <label className="text-xs font-bold text-slate-300 block">Bypass Cache & Force Regenerate</label>
+                  <p className="text-[10px] text-slate-500 mt-0.5 leading-relaxed">Skip the render cache and queue a fresh GPU render even if an identical result already exists.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setForceRegenerate(!forceRegenerate)}
+                  className={`relative w-11 h-6 rounded-full border transition-all duration-200 shrink-0 ml-4 ${
+                    forceRegenerate
+                      ? 'bg-indigo-600 border-indigo-500'
+                      : 'bg-slate-800 border-slate-700'
+                  }`}
+                >
+                  <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full transition-transform duration-200 ${
+                    forceRegenerate
+                      ? 'translate-x-5 bg-white'
+                      : 'translate-x-0 bg-slate-500'
+                  }`} />
+                </button>
+              </div>
+
+            {/* Actions Footer */}
+            <div className="flex items-center justify-end space-x-3 px-6 py-4 border-t border-slate-850 bg-slate-950/30 mt-auto">
+              <button
+                onClick={() => setIsLaunchModalOpen(false)}
+                className="px-4 py-2.5 rounded-lg text-slate-400 hover:text-slate-100 font-semibold text-xs uppercase tracking-wider transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleLaunchRenderConfirm}
+                disabled={isLaunchingJob}
+                className="inline-flex items-center space-x-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-5 py-2.5 rounded-lg shadow-lg hover:shadow-indigo-500/10 transition-colors uppercase tracking-wider disabled:opacity-60"
+              >
+                {isLaunchingJob ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <span>Queueing Job...</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-3.5 w-3.5" />
+                    <span>Queue Render Job</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>

@@ -9,6 +9,7 @@ import threading
 import subprocess
 import psycopg2
 import json
+import argparse
 from config import config
 from capacity import load_profile, downshift_job_settings, requires_review, LAPTOP_PROFILE
 from storage import downloadFileToWorker, uploadFileFromWorker
@@ -17,6 +18,7 @@ from comfyui_client import ComfyUIClient, ComfyUIConnectionError, ComfyUIExecuti
 # Control flag for grace shutdown handling
 running = True
 active_job_id = None
+worker_mode = "batch"  # Active run mode ('manual', 'batch', or 'live')
 worker_state = {
     "status": "online",
     "mode": "idle"
@@ -24,6 +26,101 @@ worker_state = {
 
 # Load capacity profile (uses LAPTOP_PROFILE defaults)
 capacity_profile = load_profile()
+
+class LocalResourceLock:
+    def __init__(self, workspace_root):
+        self.lock_file = os.path.join(workspace_root, "local_resource_lock.json")
+        self.thread_lock = threading.Lock()
+
+    def _read_lock(self):
+        if not os.path.exists(self.lock_file):
+            return {
+                "activeJobId": None,
+                "activeStage": None,
+                "startedAt": None,
+                "status": "IDLE"
+            }
+        try:
+            with open(self.lock_file, "r") as f:
+                data = json.load(f)
+                return {
+                    "activeJobId": data.get("activeJobId"),
+                    "activeStage": data.get("activeStage"),
+                    "startedAt": data.get("startedAt"),
+                    "status": data.get("status", "IDLE")
+                }
+        except Exception:
+            return {
+                "activeJobId": None,
+                "activeStage": None,
+                "startedAt": None,
+                "status": "IDLE"
+            }
+
+    def _write_lock(self, data):
+        try:
+            # Ensure workspace directory exists (in case it is deleted)
+            os.makedirs(os.path.dirname(self.lock_file), exist_ok=True)
+            with open(self.lock_file, "w") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"[Resource Lock] Error writing lock file: {e}", file=sys.stderr)
+
+    def acquire(self, job_id: str, stage: str) -> bool:
+        with self.thread_lock:
+            lock_data = self._read_lock()
+            
+            # Check timeout of current lock if BUSY
+            if lock_data["status"] == "BUSY" and lock_data["startedAt"]:
+                try:
+                    started_dt = datetime.datetime.fromisoformat(lock_data["startedAt"])
+                    timeout_mins = int(os.environ.get("LOCAL_RESOURCE_LOCK_TIMEOUT_MINUTES", "60"))
+                    elapsed = (datetime.datetime.now() - started_dt).total_seconds() / 60.0
+                    if elapsed > timeout_mins:
+                        print(f"[Resource Lock] Force releasing stale lock for job {lock_data['activeJobId']} stage {lock_data['activeStage']} due to timeout.", file=sys.stderr)
+                        self.release_without_thread_lock()
+                        lock_data = self._read_lock()
+                except Exception as ex:
+                    print(f"[Resource Lock] Error parsing lock timestamp: {ex}", file=sys.stderr)
+            
+            if lock_data["status"] == "BUSY":
+                # Check if it's the same job and stage (re-entrant lock)
+                if lock_data["activeJobId"] == job_id and lock_data["activeStage"] == stage:
+                    return True
+                
+                print(f"[Resource Lock] Local worker is busy. Job will start after the current job finishes. (Active Job: {lock_data['activeJobId']}, Stage: {lock_data['activeStage']})", file=sys.stderr)
+                return False
+
+            # Acquire lock
+            new_data = {
+                "activeJobId": job_id,
+                "activeStage": stage,
+                "startedAt": datetime.datetime.now().isoformat(),
+                "status": "BUSY"
+            }
+            self._write_lock(new_data)
+            print(f"[Resource Lock] Acquired lock for job {job_id}, stage {stage}")
+            return True
+
+    def release(self):
+        with self.thread_lock:
+            self.release_without_thread_lock()
+
+    def release_without_thread_lock(self):
+        new_data = {
+            "activeJobId": None,
+            "activeStage": None,
+            "startedAt": None,
+            "status": "IDLE"
+        }
+        self._write_lock(new_data)
+        print("[Resource Lock] Released lock")
+        
+    def get_status(self):
+        with self.thread_lock:
+            return self._read_lock()
+
+resource_lock = LocalResourceLock(config.LOCAL_WORKSPACE_ROOT)
 
 def get_gpu_info():
     """
@@ -61,7 +158,7 @@ def heartbeat_loop():
     """
     Background daemon loop that reports worker heartbeat every 10s.
     """
-    global running, active_job_id
+    global running, active_job_id, worker_mode
     print(f"[{datetime.datetime.now().strftime('%T')}] Heartbeat daemon loop initiated.")
     
     # Separate connection for the heartbeat daemon
@@ -98,7 +195,7 @@ def heartbeat_loop():
                 active_job_id,
                 gpu_name,
                 vram_gb,
-                "rendering" if active_job_id else "idle",
+                worker_mode,
                 now
             ))
             hb_conn.commit()
@@ -129,36 +226,106 @@ def heartbeat_loop():
     except Exception as e:
         print(f"Failed to report offline status: {e}", file=sys.stderr)
 
-def claim_job(conn):
+def recover_stale_jobs(conn):
     """
-    Transaction-safe raw SQL claim locking the oldest queued job row.
+    Checks for jobs in 'claimed' or 'processing' status whose assigned worker is offline.
+    Reschedules them to 'queued' if retry_count < max_retries, otherwise marks them 'failed'.
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute("BEGIN;")
+        stale_threshold = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=30)
+        cur.execute("""
+            SELECT r.id, r.retry_count, r.max_retries, r.worker_id
+            FROM render_jobs r
+            LEFT JOIN workers w ON r.worker_id = w.id
+            WHERE r.status IN ('claimed', 'processing')
+              AND (
+                w.id IS NULL 
+                OR w.status = 'offline' 
+                OR w.last_heartbeat < %s
+                OR w.last_heartbeat IS NULL
+              )
+            FOR UPDATE;
+        """, (stale_threshold,))
+        stale_jobs = cur.fetchall()
+        
+        if stale_jobs:
+            for job_id, retry_count, max_retries, worker_id in stale_jobs:
+                print(f"[{datetime.datetime.now().strftime('%T')}] Recovering stale job {job_id} from worker {worker_id}...")
+                if retry_count < max_retries:
+                    new_retry = retry_count + 1
+                    cur.execute("""
+                        UPDATE render_jobs
+                        SET status = 'queued', retry_count = %s, failed_at = %s, error_message = %s, worker_id = NULL
+                        WHERE id = %s;
+                    """, (new_retry, datetime.datetime.now(datetime.timezone.utc), f"Worker offline. Rescheduled (Retry {new_retry}/{max_retries}).", job_id))
+                    
+                    event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                    cur.execute("""
+                        INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                        VALUES (%s, %s, 'queued', %s, '{}', %s);
+                    """, (event_id, job_id, f"Stale job recovered. Previous worker: {worker_id}. Rescheduled for retry.", datetime.datetime.now(datetime.timezone.utc)))
+                else:
+                    cur.execute("""
+                        UPDATE render_jobs
+                        SET status = 'failed', failed_at = %s, error_message = %s
+                        WHERE id = %s;
+                    """, (datetime.datetime.now(datetime.timezone.utc), "Job failed: Worker heartbeat went offline too long (stale claimed job recovery limit reached).", job_id))
+                    
+                    event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                    cur.execute("""
+                        INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                        VALUES (%s, %s, 'failed', %s, '{}', %s);
+                    """, (event_id, job_id, "Job failed: Worker offline. Max retries exceeded.", datetime.datetime.now(datetime.timezone.utc)))
+        cur.execute("COMMIT;")
+    except Exception as e:
+        try:
+            cur.execute("ROLLBACK;")
+        except Exception:
+            pass
+        print(f"Failed to recover stale jobs: {e}", file=sys.stderr)
+    finally:
+        cur.close()
+
+def claim_job(conn, job_id=None):
+    """
+    Transaction-safe raw SQL claim locking the oldest queued job row or a specific job ID.
     """
     cur = conn.cursor()
     try:
         cur.execute("BEGIN;")
         
-        # Select the oldest queued job and lock the row to avoid parallel claims
-        cur.execute("""
-            SELECT id, project_id, settings_json FROM render_jobs
-            WHERE status = 'queued'
-            ORDER BY created_at ASC
-            LIMIT 1
-            FOR UPDATE SKIP LOCKED;
-        """)
+        if job_id:
+            # Claim the specific job
+            cur.execute("""
+                SELECT id, project_id, settings_json, retry_count, max_retries FROM render_jobs
+                WHERE id = %s AND status = 'queued'
+                FOR UPDATE;
+            """, (job_id,))
+        else:
+            # Select the oldest queued job and lock the row to avoid parallel claims
+            cur.execute("""
+                SELECT id, project_id, settings_json, retry_count, max_retries FROM render_jobs
+                WHERE status = 'queued'
+                ORDER BY created_at ASC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED;
+            """)
         row = cur.fetchone()
         
         if not row:
             conn.commit()
             return None
             
-        job_id, project_id, settings_json = row
+        claimed_job_id, project_id, settings_json, retry_count, max_retries = row
         
         # Update job status and set claiming worker
         cur.execute("""
             UPDATE render_jobs
             SET status = 'claimed', worker_id = %s
             WHERE id = %s;
-        """, (config.WORKER_ID, job_id))
+        """, (config.WORKER_ID, claimed_job_id))
         
         # Add claim event to job_events
         event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
@@ -166,13 +333,15 @@ def claim_job(conn):
         cur.execute("""
             INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
             VALUES (%s, %s, 'claimed', %s, '{}', %s);
-        """, (event_id, job_id, event_message, datetime.datetime.now(datetime.timezone.utc)))
+        """, (event_id, claimed_job_id, event_message, datetime.datetime.now(datetime.timezone.utc)))
         
         conn.commit()
         return {
-            "id": job_id,
+            "id": claimed_job_id,
             "project_id": project_id,
-            "settings_json": settings_json
+            "settings_json": settings_json,
+            "retry_count": retry_count,
+            "max_retries": max_retries
         }
     except Exception as e:
         conn.rollback()
@@ -208,9 +377,9 @@ def process_job(conn, job):
             review_message = " | ".join(a for a in adjustments if a.startswith("[NEEDS_REVIEW]"))
             cur.execute("""
                 UPDATE render_jobs
-                SET status = 'needs_review', error_message = %s
+                SET status = 'needs_review', error_message = %s, failed_at = %s
                 WHERE id = %s;
-            """, (review_message, job_id))
+            """, (review_message, datetime.datetime.now(datetime.timezone.utc), job_id))
 
             event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
             cur.execute("""
@@ -275,63 +444,189 @@ def process_job(conn, job):
         user_row = cur.fetchone()
         user_id = user_row[0] if user_row and user_row[0] else "default-user"
 
-        # 2. Fetch the latest input reference image from project_files
-        cur.execute("""
-            SELECT file_url FROM project_files 
-            WHERE project_id = %s AND file_type LIKE 'image/%'
-            ORDER BY created_at DESC 
-            LIMIT 1;
-        """, (project_id,))
-        file_row = cur.fetchone()
-        if not file_row:
-            # Fall back to any file type if no specific image type is marked
+        is_upscale = clamped_settings.get("job_type") == "upscale_selected"
+        render_id_to_upscale = clamped_settings.get("renderId")
+
+        if is_upscale:
+            if not render_id_to_upscale:
+                raise ValueError("renderId is required for upscale_selected job")
+            cur.execute("""
+                SELECT preview_url, style_id, prompt, negative_prompt, seed, final_image_url 
+                FROM renders 
+                WHERE id = %s LIMIT 1;
+            """, (render_id_to_upscale,))
+            render_row = cur.fetchone()
+            if not render_row:
+                raise ValueError(f"Render to upscale not found: {render_id_to_upscale}")
+            
+            # The input file is the preview image
+            file_url = render_row[0] or render_row[5]
+            if not file_url:
+                raise ValueError(f"No image URL found for render to upscale: {render_id_to_upscale}")
+                
+            style_id = render_row[1]
+            prompt_text = render_row[2]
+            negative_prompt_text = render_row[3] or ""
+            v_seed = render_row[4]
+            if v_seed is not None:
+                v_seed = int(v_seed)
+            else:
+                v_seed = random.randint(1, 1000000000)
+                
+            variations = 1
+            denoise = 0.25 # Low denoise to preserve composition/details
+        else:
+            # 2. Fetch the latest input reference image from project_files
             cur.execute("""
                 SELECT file_url FROM project_files 
-                WHERE project_id = %s 
+                WHERE project_id = %s AND file_type LIKE 'image/%'
                 ORDER BY created_at DESC 
                 LIMIT 1;
             """, (project_id,))
             file_row = cur.fetchone()
-            
-        if not file_row:
-            raise ValueError(f"No input reference image found for project: {project_id}")
-            
-        file_url = file_row[0]
+            if not file_row:
+                # Fall back to any file type if no specific image type is marked
+                cur.execute("""
+                    SELECT file_url FROM project_files 
+                    WHERE project_id = %s 
+                    ORDER BY created_at DESC 
+                    LIMIT 1;
+                """, (project_id,))
+                file_row = cur.fetchone()
+                
+            if not file_row:
+                raise ValueError(f"No input reference image found for project: {project_id}")
+                
+            file_url = file_row[0]
 
-        # 3. Retrieve style preference template
-        style_id = None
-        style_pref = clamped_settings.get("stylePreference")
-        prompt_text = clamped_settings.get("prompt")
-        negative_prompt_text = clamped_settings.get("negativePrompt") or clamped_settings.get("negative_prompt", "")
-        
-        if not prompt_text:
-            prompt_text = "high quality architectural rendering, photorealistic, natural lighting, detailed materials"
+            # 3. Retrieve style preference template
+            style_id = None
+            style_pref = clamped_settings.get("stylePreference")
+            prompt_text = clamped_settings.get("prompt")
+            negative_prompt_text = clamped_settings.get("negativePrompt") or clamped_settings.get("negative_prompt", "")
             
-        if style_pref:
-            cur.execute("""
-                SELECT id, prompt_template, negative_prompt 
-                FROM styles 
-                WHERE name = %s OR id = %s 
-                LIMIT 1;
-            """, (style_pref, style_pref))
-            style_row = cur.fetchone()
-            if style_row:
-                style_id, prompt_template, style_neg = style_row
-                if not clamped_settings.get("prompt"):
-                    prompt_text = prompt_template
-                if not negative_prompt_text and style_neg:
-                    negative_prompt_text = style_neg
+            if not prompt_text:
+                prompt_text = "high quality architectural rendering, photorealistic, natural lighting, detailed materials"
+                
+            if style_pref:
+                cur.execute("""
+                    SELECT id, prompt_template, negative_prompt 
+                    FROM styles 
+                    WHERE name = %s OR id = %s 
+                    LIMIT 1;
+                """, (style_pref, style_pref))
+                style_row = cur.fetchone()
+                if style_row:
+                    style_id, prompt_template, style_neg = style_row
+                    if not clamped_settings.get("prompt"):
+                        prompt_text = prompt_template
+                    if not negative_prompt_text and style_neg:
+                        negative_prompt_text = style_neg
 
         # 4. Create local job workspace
         workspace_dir = os.path.join(config.LOCAL_WORKSPACE_ROOT, "jobs", job_id)
         os.makedirs(workspace_dir, exist_ok=True)
 
-        # 5. Download the input reference image from object storage
+        # 5. Download the input image
         local_input_filename = f"input_{os.path.basename(file_url)}"
         local_input_path = os.path.join(workspace_dir, local_input_filename)
         
         print(f"[{datetime.datetime.now().strftime('%T')}] Downloading input image from S3: {file_url} -> {local_input_path}")
         downloadFileToWorker(file_url, local_input_path)
+
+        local_control_path = None
+        s3_control_key = None
+
+        if not is_upscale:
+            # Acquire lock for CONTROL_MAP_PREPROCESSING
+            if config.LOCAL_RESOURCE_LOCK_ENABLED:
+                acquired = False
+                while not acquired:
+                    if not running:
+                        raise KeyboardInterrupt("Termination signal received while waiting for lock")
+                    acquired = resource_lock.acquire(job_id, "CONTROL_MAP_PREPROCESSING")
+                    if not acquired:
+                        time.sleep(2)
+
+            # 5b. Generate Canny edge control map locally, upload, and register
+            try:
+                from PIL import Image, ImageFilter
+                local_control_filename = f"canny_{os.path.basename(file_url)}"
+                if not local_control_filename.lower().endswith(".png"):
+                    local_control_filename += ".png"
+                local_control_path = os.path.join(workspace_dir, local_control_filename)
+                
+                print(f"[{datetime.datetime.now().strftime('%T')}] Generating lightweight Canny edge control map locally...")
+                with Image.open(local_input_path) as img:
+                    gray = img.convert("L")
+                    blurred = gray.filter(ImageFilter.GaussianBlur(radius=1.2))
+                    edges = blurred.filter(ImageFilter.FIND_EDGES)
+                    # Binary thresholding for clean black & white mask
+                    crisp_edges = edges.point(lambda p: 255 if p > 25 else 0)
+                    final_control = crisp_edges.convert("RGB")
+                    final_control.save(local_control_path, "PNG")
+                    
+                print(f"[{datetime.datetime.now().strftime('%T')}] Canny edge map generated: {local_control_path}")
+                
+                # Upload control map to object storage
+                timestamp_sec = int(time.time())
+                s3_control_key = f"users/{user_id}/projects/{project_id}/previews/canny_{job_id}_{timestamp_sec}.png"
+                print(f"[{datetime.datetime.now().strftime('%T')}] Uploading control map to S3: {s3_control_key}")
+                uploadFileFromWorker(local_control_path, s3_control_key)
+                
+                # Register in project_files database
+                file_id = f"file_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                metadata_json = json.dumps({
+                    "size": f"{(os.path.getsize(local_control_path) / 1024):.2f} KB",
+                    "uploadedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "role": "control_map",
+                    "preprocessor": "canny",
+                    "sourceJobId": job_id
+                })
+                
+                cur_file = conn.cursor()
+                try:
+                    cur_file.execute("""
+                        INSERT INTO project_files (id, project_id, file_url, file_type, metadata_json, created_at)
+                        VALUES (%s, %s, %s, %s, %s, %s);
+                    """, (
+                        file_id,
+                        project_id,
+                        s3_control_key,
+                        "image/png",
+                        metadata_json,
+                        datetime.datetime.now(datetime.timezone.utc)
+                    ))
+                    
+                    # Log preprocessing job event
+                    event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                    cur_file.execute("""
+                        INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                        VALUES (%s, %s, 'preprocessing', %s, %s, %s);
+                    """, (
+                        event_id,
+                        job_id,
+                        "preprocessing",
+                        "Canny edge control map preprocessed locally and saved.",
+                        json.dumps({"fileId": file_id, "s3Key": s3_control_key}),
+                        datetime.datetime.now(datetime.timezone.utc)
+                    ))
+                    conn.commit()
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Registered control map in DB: {file_id}")
+                except Exception as db_err:
+                    conn.rollback()
+                    print(f"Failed to save control map metadata to database: {db_err}", file=sys.stderr)
+                finally:
+                    cur_file.close()
+                    
+            except Exception as preprocess_err:
+                print(f"Failed to preprocess control map: {preprocess_err}", file=sys.stderr)
+                local_control_path = None
+                s3_control_key = None
+
+            # Release lock for CONTROL_MAP_PREPROCESSING
+            if config.LOCAL_RESOURCE_LOCK_ENABLED:
+                resource_lock.release()
 
         # 6. Read image dimensions to cap them safely
         width = 768
@@ -345,7 +640,11 @@ def process_job(conn, job):
             print(f"Failed to read image dimensions: {img_err}. Using 768px default limit.", file=sys.stderr)
 
         # Clamp dimensions preserving aspect ratio to fit within capacity limit
-        max_res = capacity_profile.get("max_preview_resolution", 768)
+        if is_upscale:
+            max_res = 1536  # High quality target for upscale
+        else:
+            max_res = 512   # Low resolution target for fast preview variations
+            
         if width > max_res or height > max_res:
             if width >= height:
                 height = int(height * (max_res / width))
@@ -358,26 +657,64 @@ def process_job(conn, job):
         width = (width // 8) * 8
         height = (height // 8) * 8
 
-        # 7. Initialize ComfyUI client and upload input image
+        # Acquire lock for COMFY_RUNNING
+        if config.LOCAL_RESOURCE_LOCK_ENABLED:
+            acquired = False
+            while not acquired:
+                if not running:
+                    raise KeyboardInterrupt("Termination signal received while waiting for lock")
+                acquired = resource_lock.acquire(job_id, "COMFY_RUNNING")
+                if not acquired:
+                    time.sleep(2)
+
+        # 7. Initialize ComfyUI client and upload input image & control map
         print(f"[{datetime.datetime.now().strftime('%T')}] Initializing ComfyUI client at {config.COMFYUI_URL}...")
         comfy_client = ComfyUIClient(config.COMFYUI_URL)
         comfy_client.check_health()
         
         print(f"[{datetime.datetime.now().strftime('%T')}] Uploading input image to ComfyUI...")
         comfyui_input_name = comfy_client.upload_image(local_input_path)
+        
+        comfyui_control_name = None
+        if local_control_path:
+            try:
+                print(f"[{datetime.datetime.now().strftime('%T')}] Uploading control map image to ComfyUI...")
+                comfyui_control_name = comfy_client.upload_image(local_control_path)
+            except Exception as comfy_upload_err:
+                print(f"Failed to upload control map to ComfyUI: {comfy_upload_err}", file=sys.stderr)
 
         # 8. Render variations sequentially
-        variations = clamped_settings.get("variations", 2)
-        if not variations or variations <= 0:
-            variations = 2
-            
-        max_vars = capacity_profile.get("max_variations_per_job", 4)
-        if variations > max_vars:
-            variations = max_vars
+        if not is_upscale:
+            variations = clamped_settings.get("variations", 2)
+            if not variations or variations <= 0:
+                variations = 2
+                
+            max_vars = capacity_profile.get("max_variations_per_job", 4)
+            if variations > max_vars:
+                variations = max_vars
             
         steps = clamped_settings.get("steps", 20)
         cfg_scale = clamped_settings.get("cfg_scale", 7.0)
-        denoise = clamped_settings.get("denoise", 0.65)
+        
+        if not is_upscale:
+            # Resolve geometry lock mode and map to denoise
+            geometry_lock_mode = (clamped_settings.get("geometryLockMode") or clamped_settings.get("geometry_lock_mode") or "accurate").lower()
+            mode_denoise_map = {
+                "creative": 0.85,
+                "balanced": 0.65,
+                "accurate": 0.50,
+                "technical": 0.30
+            }
+            
+            # Override denoise based on mode if it matches default or isn't specified
+            denoise = clamped_settings.get("denoise")
+            if denoise is None or denoise in (0.65, 0.50, 0.70, 0.55):
+                denoise = mode_denoise_map.get(geometry_lock_mode, 0.50)
+                
+            clamped_settings["denoise"] = denoise
+            clamped_settings["geometryLockMode"] = geometry_lock_mode
+        else:
+            geometry_lock_mode = "accurate"
         
         print(f"[{datetime.datetime.now().strftime('%T')}] Launching sequential variation loops ({variations} total)...")
         
@@ -402,7 +739,11 @@ def process_job(conn, job):
                     finally:
                         cur_prog.close()
 
-            v_seed = clamped_settings.get("seed", random.randint(1, 1000000000)) + idx
+            if not is_upscale:
+                v_seed = clamped_settings.get("seed", random.randint(1, 1000000000)) + idx
+            else:
+                v_seed = seed = v_seed  # Use exact same seed
+                
             print(f"[{datetime.datetime.now().strftime('%T')}] Rendering variation {idx + 1}/{variations} with seed {v_seed}")
             
             output_paths = comfy_client.render(
@@ -417,6 +758,8 @@ def process_job(conn, job):
                 steps=steps,
                 cfg_scale=cfg_scale,
                 denoise=denoise,
+                geometry_lock_mode=geometry_lock_mode,
+                control_image=comfyui_control_name,
                 on_progress=on_comfyui_progress
             )
             
@@ -424,7 +767,7 @@ def process_job(conn, job):
                 raise ComfyUIExecutionError(f"No output image returned from ComfyUI for variation {idx}")
                 
             comfyui_output_path = output_paths[0]
-            local_output_filename = f"output_var_{idx}.png"
+            local_output_filename = f"output_var_{idx}.png" if not is_upscale else f"output_upscale.png"
             local_output_path = os.path.join(workspace_dir, local_output_filename)
             
             # Download completed render image
@@ -437,44 +780,72 @@ def process_job(conn, job):
                 
             # Upload render output to object storage
             timestamp_sec = int(time.time())
-            s3_output_key = f"users/{user_id}/projects/{project_id}/outputs/render_{job_id}_var_{idx}_{timestamp_sec}.png"
+            if not is_upscale:
+                s3_output_key = f"users/{user_id}/projects/{project_id}/outputs/render_{job_id}_var_{idx}_{timestamp_sec}.png"
+            else:
+                s3_output_key = f"users/{user_id}/projects/{project_id}/outputs/render_{job_id}_upscaled_{timestamp_sec}.png"
             
-            print(f"[{datetime.datetime.now().strftime('%T')}] Uploading variation {idx + 1} to S3: {s3_output_key}")
+            print(f"[{datetime.datetime.now().strftime('%T')}] Uploading output to S3: {s3_output_key}")
             uploadFileFromWorker(local_output_path, s3_output_key)
             
-            # Save render metadata row in Neon
-            render_id = f"render_{int(time.time() * 1000)}_{random.randint(0, 999)}"
-            cur.execute("""
-                INSERT INTO renders (
-                    id, job_id, project_id, base_image_url, final_image_url, 
-                    style_id, prompt, negative_prompt, seed, settings_json, created_at
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-            """, (
-                render_id,
-                job_id,
-                project_id,
-                file_url,
-                s3_output_key,
-                style_id,
-                prompt_text,
-                negative_prompt_text,
-                v_seed,
-                json.dumps(clamped_settings),
-                datetime.datetime.now(datetime.timezone.utc)
-            ))
-            
-            # Log transition event log
-            event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
-            cur.execute("""
-                INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
-                VALUES (%s, %s, 'processing', %s, '{}', %s);
-            """, (
-                event_id, 
-                job_id, 
-                f"Variation {idx + 1}/{variations} completed and uploaded successfully.", 
-                datetime.datetime.now(datetime.timezone.utc)
-            ))
+            if not is_upscale:
+                # Save render metadata row in Neon
+                render_id = f"render_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                cache_key = clamped_settings.get("cacheKey")
+                cur.execute("""
+                    INSERT INTO renders (
+                        id, job_id, project_id, base_image_url, final_image_url, 
+                        preview_url, final_url, cache_key, style_id, prompt, negative_prompt, 
+                        seed, settings_json, created_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                """, (
+                    render_id,
+                    job_id,
+                    project_id,
+                    file_url,
+                    s3_output_key,
+                    s3_output_key,
+                    None,
+                    cache_key,
+                    style_id,
+                    prompt_text,
+                    negative_prompt_text,
+                    v_seed,
+                    json.dumps(clamped_settings),
+                    datetime.datetime.now(datetime.timezone.utc)
+                ))
+                
+                # Log transition event log
+                event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                cur.execute("""
+                    INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                    VALUES (%s, %s, 'processing', %s, '{}', %s);
+                """, (
+                    event_id, 
+                    job_id, 
+                    f"Variation {idx + 1}/{variations} completed and uploaded successfully.", 
+                    datetime.datetime.now(datetime.timezone.utc)
+                ))
+            else:
+                # Update existing render metadata with upscaled url
+                cur.execute("""
+                    UPDATE renders
+                    SET final_url = %s, final_image_url = %s
+                    WHERE id = %s;
+                """, (s3_output_key, s3_output_key, render_id_to_upscale))
+                
+                # Log transition event log
+                event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                cur.execute("""
+                    INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                    VALUES (%s, %s, 'processing', %s, '{}', %s);
+                """, (
+                    event_id, 
+                    job_id, 
+                    f"Render variation {render_id_to_upscale} upscale completed and uploaded successfully.", 
+                    datetime.datetime.now(datetime.timezone.utc)
+                ))
             conn.commit()
 
         # Update final job state as completed
@@ -485,35 +856,71 @@ def process_job(conn, job):
         """, (datetime.datetime.now(datetime.timezone.utc), job_id))
         
         event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+        event_msg = 'Render variations execution completed. All outputs registered.' if not is_upscale else f'Render {render_id_to_upscale} upscale completed.'
         cur.execute("""
             INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
-            VALUES (%s, %s, 'completed', 'Render variations execution completed. All outputs registered.', '{}', %s);
-        """, (event_id, job_id, datetime.datetime.now(datetime.timezone.utc)))
+            VALUES (%s, %s, 'completed', %s, '{}', %s);
+        """, (event_id, job_id, event_msg, datetime.datetime.now(datetime.timezone.utc)))
         conn.commit()
         
     except Exception as e:
         conn.rollback()
         print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} encountered execution error: {e}", file=sys.stderr)
         
-        try:
-            cur.execute("""
-                UPDATE render_jobs
-                SET status = 'failed', error_message = %s, completed_at = %s
-                WHERE id = %s;
-            """, (str(e), datetime.datetime.now(datetime.timezone.utc), job_id))
+        # Clean up partial workspace
+        workspace_dir = os.path.join(config.LOCAL_WORKSPACE_ROOT, "jobs", job_id)
+        if os.path.exists(workspace_dir):
+            print(f"[{datetime.datetime.now().strftime('%T')}] Cleaning up partial workspace for job {job_id}...")
+            import shutil
+            shutil.rmtree(workspace_dir, ignore_errors=True)
             
-            event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
-            cur.execute("""
-                INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
-                VALUES (%s, %s, 'failed', %s, '{}', %s);
-            """, (event_id, job_id, f"Render execution failed: {e}", datetime.datetime.now(datetime.timezone.utc)))
-            conn.commit()
+        cur_fail = None
+        try:
+            retry_count = job.get("retry_count", 0)
+            max_retries = job.get("max_retries", 3)
+            
+            cur_fail = conn.cursor()
+            if retry_count < max_retries:
+                new_retry = retry_count + 1
+                cur_fail.execute("""
+                    UPDATE render_jobs
+                    SET status = 'queued', retry_count = %s, error_message = %s, failed_at = %s, progress = 0
+                    WHERE id = %s;
+                """, (new_retry, str(e), datetime.datetime.now(datetime.timezone.utc), job_id))
+                
+                event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                cur_fail.execute("""
+                    INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                    VALUES (%s, %s, 'failed', %s, '{}', %s);
+                """, (event_id, job_id, f"Render execution failed (Retry {new_retry}/{max_retries}): {e}", datetime.datetime.now(datetime.timezone.utc)))
+                conn.commit()
+                print(f"[{datetime.datetime.now().strftime('%T')}] Rescheduled job {job_id} for retry ({new_retry}/{max_retries}).")
+            else:
+                cur_fail.execute("""
+                    UPDATE render_jobs
+                    SET status = 'failed', error_message = %s, failed_at = %s
+                    WHERE id = %s;
+                """, (str(e), datetime.datetime.now(datetime.timezone.utc), job_id))
+                
+                event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                cur_fail.execute("""
+                    INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                    VALUES (%s, %s, 'failed', %s, '{}', %s);
+                """, (event_id, job_id, f"Render execution failed permanently (Max retries exceeded): {e}", datetime.datetime.now(datetime.timezone.utc)))
+                conn.commit()
+                print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} failed permanently (Max retries exceeded).")
         except Exception as log_err:
             print(f"Failed to log job failure details: {log_err}", file=sys.stderr)
-            conn.rollback()
+            if conn:
+                conn.rollback()
+        finally:
+            if cur_fail:
+                cur_fail.close()
     finally:
         cur.close()
         active_job_id = None
+        if config.LOCAL_RESOURCE_LOCK_ENABLED:
+            resource_lock.release()
 
 def handle_shutdown(signum, frame):
     """
@@ -528,7 +935,51 @@ signal.signal(signal.SIGINT, handle_shutdown)
 signal.signal(signal.SIGTERM, handle_shutdown)
 
 def main():
-    global running
+    global running, worker_mode
+
+    # Parse arguments
+    parser = argparse.ArgumentParser(description="RenderPilot Laptop Worker Node", add_help=False)
+    parser.add_argument('--mode', type=str, choices=['manual', 'batch', 'live'], default=None)
+    parser.add_argument('--once', action='store_true')
+    parser.add_argument('--job-id', type=str, default=None)
+    parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--validate', action='store_true')
+    parser.add_argument('-h', '--help', action='store_true')
+
+    args, unknown = parser.parse_known_args()
+
+    if args.help:
+        print("Usage: python apps/worker/main.py [options]")
+        print("Options:")
+        print("  --mode <manual|batch|live>  Worker run mode (default: batch)")
+        print("  --once                      Run in manual mode, process one job, and exit")
+        print("  --job-id <id>               Run in manual mode, process specific job, and exit")
+        print("  --dry-run                   Perform a dry-run configuration validation and exit")
+        print("  --validate                  Validation check")
+        print("  -h, --help                  Show this help message")
+        return
+
+    # Dry-run validation check for configuration and test suites
+    if args.dry_run or args.validate or os.environ.get('WORKER_DRY_RUN', 'false').lower() == 'true':
+        print("Worker client started successfully.")
+        print(f"Worker ID:     {config.WORKER_ID}")
+        print(f"Worker Name:   {config.WORKER_NAME}")
+        return
+
+    # Determine mode
+    if args.job_id or args.once:
+        worker_mode = 'manual'
+        if args.mode and args.mode != 'manual':
+            print(f"Warning: CLI flags --once/--job-id conflict with --mode {args.mode}. Overriding mode to manual.", file=sys.stderr)
+    elif args.mode:
+        worker_mode = args.mode
+    else:
+        worker_mode = 'batch'
+
+    if worker_mode == 'manual' and not args.once and not args.job_id:
+        print("Error: Manual mode requires --once or --job-id <job_id>.", file=sys.stderr)
+        sys.exit(1)
+
     print("==================================================")
     print("        RenderPilot Laptop Worker Node started     ")
     print("==================================================")
@@ -536,6 +987,7 @@ def main():
     print(f"Worker Name:   {config.WORKER_NAME}")
     print(f"GPU Model:     {gpu_name}")
     print(f"VRAM Capacity: {vram_gb} GB")
+    print(f"Active Mode:   {worker_mode.upper()}")
     print("--------------------------------------------------")
     print("Capacity Guardrails (Laptop Profile):")
     print(f"  Max Concurrent Jobs:    {capacity_profile['max_concurrent_jobs']}")
@@ -553,6 +1005,8 @@ def main():
     hb_thread.start()
     
     conn = None
+    first_run = True
+
     while running:
         try:
             if not conn or conn.closed:
@@ -565,14 +1019,51 @@ def main():
                 time.sleep(2)
                 continue
 
+            # Check if local resource lock is busy (e.g. from another process on this machine)
+            if config.LOCAL_RESOURCE_LOCK_ENABLED:
+                lock_status = resource_lock.get_status()
+                if lock_status["status"] == "BUSY":
+                    time.sleep(2)
+                    continue
+
             # Attempt to claim a queued job
-            job = claim_job(conn)
+            if worker_mode == 'manual' and args.job_id:
+                if first_run:
+                    recover_stale_jobs(conn)
+                    job = claim_job(conn, job_id=args.job_id)
+                else:
+                    job = None
+            else:
+                recover_stale_jobs(conn)
+                job = claim_job(conn)
+                
             if job:
                 # Execute the claimed job
                 process_job(conn, job)
+                
+                # In manual mode, we process only one job, then exit
+                if worker_mode == 'manual':
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Manual mode: finished processing job {job['id']}. Exiting.")
+                    running = False
+                    break
             else:
-                # Sleep briefly between queries if queue is empty
-                time.sleep(4)
+                # No job was claimed
+                if worker_mode == 'manual':
+                    if args.job_id:
+                        print(f"[{datetime.datetime.now().strftime('%T')}] Manual mode: job {args.job_id} not found or not in queued status. Exiting.")
+                    else:
+                        print(f"[{datetime.datetime.now().strftime('%T')}] Manual mode: no queued jobs found. Exiting.")
+                    running = False
+                    break
+                elif worker_mode == 'batch':
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Batch mode: queue is empty. Exiting.")
+                    running = False
+                    break
+                else:
+                    # Live mode: poll continuously
+                    time.sleep(4)
+            
+            first_run = False
                 
         except psycopg2.OperationalError as db_err:
             print(f"Database operational connection error: {db_err}. Retrying in 5s...", file=sys.stderr)
@@ -587,12 +1078,28 @@ def main():
             print(f"Unexpected loop exception: {err}. Continuing...", file=sys.stderr)
             time.sleep(4)
             
-    # Cleanup main connections
+    # Cleanup main connections and report offline
     if conn:
         try:
             conn.close()
         except Exception:
             pass
+
+    print(f"[{datetime.datetime.now().strftime('%T')}] Reporting worker node offline...")
+    try:
+        cleanup_conn = psycopg2.connect(config.DATABASE_URL)
+        cur_cleanup = cleanup_conn.cursor()
+        now = datetime.datetime.now(datetime.timezone.utc)
+        cur_cleanup.execute("""
+            UPDATE workers
+            SET status = 'offline', mode = 'idle', last_seen_at = %s, last_heartbeat = %s, current_job_id = NULL
+            WHERE id = %s;
+        """, (now, now, config.WORKER_ID))
+        cleanup_conn.commit()
+        cur_cleanup.close()
+        cleanup_conn.close()
+    except Exception as e:
+        print(f"Failed to report offline status on cleanup: {e}", file=sys.stderr)
             
     print(f"[{datetime.datetime.now().strftime('%T')}] Worker shutdown successfully complete. Goodbye.")
 

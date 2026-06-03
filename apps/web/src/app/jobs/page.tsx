@@ -21,9 +21,12 @@ interface RenderJob {
   id: string;
   projectId: string;
   workerId: string | null;
-  status: 'queued' | 'claimed' | 'processing' | 'completed' | 'failed' | 'cancelled';
+  status: 'queued' | 'claimed' | 'processing' | 'completed' | 'failed' | 'cancelled' | 'needs_review';
   progress: number;
   errorMessage: string | null;
+  retryCount: number;
+  maxRetries: number;
+  failedAt: string | null;
   settingsJson: string | null;
   createdAt: string;
   completedAt: string | null;
@@ -168,6 +171,8 @@ export default function JobsQueue() {
         return <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-400 border border-slate-700 uppercase tracking-wider">Queued</span>;
       case 'completed': 
         return <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 uppercase tracking-wider">Completed</span>;
+      case 'needs_review': 
+        return <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/25 uppercase tracking-wider">Needs Review</span>;
       default: 
         return <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/25 uppercase tracking-wider">Failed</span>;
     }
@@ -281,7 +286,9 @@ export default function JobsQueue() {
                       <div className="font-semibold text-slate-200 text-sm truncate max-w-[200px] group-hover:text-indigo-400 transition-colors">
                         {job.project?.name || 'Unknown Project'}
                       </div>
-                      <div className="text-[10px] text-slate-500 font-medium uppercase mt-0.5 tracking-wider">ID: {job.id}</div>
+                      <div className="text-[10px] text-slate-500 font-medium uppercase mt-0.5 tracking-wider">
+                        ID: {job.id} {job.retryCount > 0 && <span className="text-amber-400 font-bold ml-1.5">(Retry {job.retryCount}/{job.maxRetries})</span>}
+                      </div>
                     </td>
                     <td className="px-6 py-4 text-xs font-medium text-slate-400">
                       <div className="flex items-center space-x-1.5">
@@ -300,7 +307,7 @@ export default function JobsQueue() {
                             <div className="bg-indigo-500 h-full transition-all duration-300" style={{ width: `${job.progress}%` }} />
                           </div>
                         </div>
-                      ) : (job.status === 'failed' || job.status === 'cancelled') ? (
+                      ) : (job.status === 'failed' || job.status === 'cancelled' || job.status === 'needs_review') ? (
                         <div className="text-rose-450 text-xs font-medium max-w-[200px] truncate" title={job.errorMessage || 'Failed'}>
                           {job.errorMessage || 'Job execution failed'}
                         </div>
@@ -381,6 +388,9 @@ export default function JobsQueue() {
                     {selectedJob.status === 'completed' && (
                       <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 uppercase tracking-wider">Completed</span>
                     )}
+                    {selectedJob.status === 'needs_review' && (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/25 uppercase tracking-wider">Needs Review</span>
+                    )}
                     {(selectedJob.status === 'failed' || selectedJob.status === 'cancelled') && (
                       <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/25 uppercase tracking-wider">Failed</span>
                     )}
@@ -419,10 +429,22 @@ export default function JobsQueue() {
                       <span className="text-slate-500">Queued At</span>
                       <span>{new Date(selectedJob.createdAt).toLocaleString()}</span>
                     </div>
+                    {selectedJob.retryCount > 0 && (
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Retry Attempts</span>
+                        <span className="text-amber-400 font-semibold">{selectedJob.retryCount} / {selectedJob.maxRetries}</span>
+                      </div>
+                    )}
                     {selectedJob.completedAt && (
                       <div className="flex justify-between">
                         <span className="text-slate-500">Finished At</span>
                         <span>{new Date(selectedJob.completedAt).toLocaleString()}</span>
+                      </div>
+                    )}
+                    {selectedJob.failedAt && (
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Failed At</span>
+                        <span>{new Date(selectedJob.failedAt).toLocaleString()}</span>
                       </div>
                     )}
                     {selectedJob.errorMessage && (
