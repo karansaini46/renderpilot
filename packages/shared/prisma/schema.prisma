@@ -129,6 +129,7 @@ model Render {
   finalImageUrl   String?          @map("final_image_url")
   previewUrl      String?          @map("preview_url")
   finalUrl        String?          @map("final_url")
+  cacheKey        String?          @map("cache_key")
   depthUrl        String?          @map("depth_url")
   cannyUrl        String?          @map("canny_url")
   normalUrl       String?          @map("normal_url")
@@ -148,6 +149,7 @@ model Render {
   @@map("renders")
   @@index([projectId])
   @@index([createdAt])
+  @@index([cacheKey])
 }
 
 // 8. Render Feedback model

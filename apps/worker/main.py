@@ -717,13 +717,14 @@ def process_job(conn, job):
             if not is_upscale:
                 # Save render metadata row in Neon
                 render_id = f"render_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                cache_key = clamped_settings.get("cacheKey")
                 cur.execute("""
                     INSERT INTO renders (
                         id, job_id, project_id, base_image_url, final_image_url, 
-                        preview_url, final_url, style_id, prompt, negative_prompt, 
+                        preview_url, final_url, cache_key, style_id, prompt, negative_prompt, 
                         seed, settings_json, created_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
                 """, (
                     render_id,
                     job_id,
@@ -732,6 +733,7 @@ def process_job(conn, job):
                     s3_output_key,
                     s3_output_key,
                     None,
+                    cache_key,
                     style_id,
                     prompt_text,
                     negative_prompt_text,

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { createHash } from 'crypto';
 import { prisma } from '../../../lib/db';
 import { STYLE_PRESETS } from '../../../lib/style-presets';
 
@@ -50,7 +51,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const { projectId, settingsJson } = body;
+    const { projectId, settingsJson, forceRegenerate } = body;
 
     if (!projectId || projectId.trim() === '') {
       return NextResponse.json(
@@ -247,6 +248,46 @@ export async function POST(request: Request) {
 
     if (userSettings.seed) finalSettings.seed = userSettings.seed;
 
+    // Compute deterministic cache key from render-critical parameters
+    const inputFileUrl = project.projectFiles[0]?.fileUrl || '';
+    const cacheKey = computeCacheKey({
+      inputFileUrl,
+      styleId: stylePreset.id,
+      prompt: finalSettings.prompt,
+      geometryLockMode: finalSettings.geometryLockMode,
+      seed: finalSettings.seed || null,
+      settingsSnapshot: finalSettings,
+    });
+
+    // Check for existing completed render with the same cache key
+    if (!forceRegenerate) {
+      try {
+        const existingRender = await prisma.render.findFirst({
+          where: {
+            cacheKey: cacheKey,
+            OR: [
+              { finalUrl: { not: null } },
+              { previewUrl: { not: null } },
+            ],
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        if (existingRender) {
+          return NextResponse.json(
+            { cached: true, render: existingRender },
+            { status: 200 }
+          );
+        }
+      } catch (cacheErr: any) {
+        // Cache lookup is non-blocking — log but don't fail job creation
+        console.error('[Render Cache Lookup Error]:', cacheErr.message);
+      }
+    }
+
+    // Attach cacheKey to settings so the worker can persist it on the render record
+    finalSettings.cacheKey = cacheKey;
+
     const jobId = `job_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
     const jobSettings = JSON.stringify(finalSettings);
 
@@ -410,3 +451,29 @@ function buildFinalPrompt({
     .join(', ');
 }
 
+/**
+ * Computes a deterministic MD5-based cache key from the render-critical parameters.
+ * Used to detect duplicate render requests and skip redundant GPU work.
+ */
+function computeCacheKey(params: {
+  inputFileUrl: string;
+  styleId: string;
+  prompt: string;
+  geometryLockMode: string;
+  seed: number | string | null;
+  settingsSnapshot: Record<string, any>;
+}): string {
+  const inputHash = createHash('md5').update(params.inputFileUrl).digest('hex').slice(0, 12);
+  const promptHash = createHash('md5').update(params.prompt || '').digest('hex').slice(0, 12);
+
+  // Build a stable settings fingerprint excluding volatile keys
+  const { cacheKey: _ck, prompt: _p, negativePrompt: _np, materialChoices: _mc, ...stableSettings } = params.settingsSnapshot;
+  const settingsHash = createHash('md5')
+    .update(JSON.stringify(stableSettings, Object.keys(stableSettings).sort()))
+    .digest('hex')
+    .slice(0, 12);
+
+  const seedStr = params.seed != null ? String(params.seed) : 'auto';
+
+  return `rp_${inputHash}_${params.styleId}_${promptHash}_${params.geometryLockMode}_${seedStr}_${settingsHash}`;
+}

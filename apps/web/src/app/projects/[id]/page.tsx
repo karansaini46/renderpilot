@@ -124,6 +124,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
   const [selectedProjectType, setSelectedProjectType] = useState('Residential');
   const [selectedMaterials, setSelectedMaterials] = useState<string[]>([]);
   const [selectedGeometryLockMode, setSelectedGeometryLockMode] = useState('accurate');
+  const [forceRegenerate, setForceRegenerate] = useState(false);
 
   // Material Mapping State
   const [materialMappings, setMaterialMappings] = useState<any[]>([]);
@@ -480,6 +481,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           projectId: id,
+          forceRegenerate: forceRegenerate,
           settingsJson: JSON.stringify({
             styleId: selectedStylePreset,
             sceneType: selectedSceneType,
@@ -490,9 +492,15 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
         })
       });
 
+      const responseData = await res.json();
+
       if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.error || 'Failed to queue render job');
+        throw new Error(responseData.error || 'Failed to queue render job');
+      }
+
+      // Handle cache hit: API returns 200 with cached render
+      if (responseData.cached) {
+        alert('Cache hit! An identical render already exists. Showing existing result. Use "Bypass Cache" to force a new render.');
       }
 
       setIsLaunchModalOpen(false);
@@ -1898,6 +1906,29 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                 </div>
               </div>
             </div>
+
+              {/* Step 6: Bypass Cache option */}
+              <div className="bg-slate-950/40 border border-slate-850 rounded-xl p-4.5 flex items-center justify-between">
+                <div>
+                  <label className="text-xs font-bold text-slate-300 block">Bypass Cache & Force Regenerate</label>
+                  <p className="text-[10px] text-slate-500 mt-0.5 leading-relaxed">Skip the render cache and queue a fresh GPU render even if an identical result already exists.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setForceRegenerate(!forceRegenerate)}
+                  className={`relative w-11 h-6 rounded-full border transition-all duration-200 shrink-0 ml-4 ${
+                    forceRegenerate
+                      ? 'bg-indigo-600 border-indigo-500'
+                      : 'bg-slate-800 border-slate-700'
+                  }`}
+                >
+                  <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full transition-transform duration-200 ${
+                    forceRegenerate
+                      ? 'translate-x-5 bg-white'
+                      : 'translate-x-0 bg-slate-500'
+                  }`} />
+                </button>
+              </div>
 
             {/* Actions Footer */}
             <div className="flex items-center justify-end space-x-3 px-6 py-4 border-t border-slate-850 bg-slate-950/30 mt-auto">
