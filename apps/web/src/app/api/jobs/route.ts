@@ -285,7 +285,7 @@ export async function POST(request: Request) {
           locked: true
         }
       });
-      dbLockedMaterials = lockedMappings.map(m => {
+      dbLockedMaterials = lockedMappings.map((m: any) => {
         const finish = (m.selectedMaterial || '').trim();
         const zone = (m.detectedClass || '').trim();
         if (finish && zone) {
@@ -523,7 +523,7 @@ function buildFinalPrompt({
 
   // 3. Add material choices highlight tags
   if (materialChoices && materialChoices.length > 0) {
-    const materialsStr = materialChoices.map(m => m.toLowerCase()).join(', ');
+    const materialsStr = materialChoices.map((m: any) => m.toLowerCase()).join(', ');
     promptParts.push(`with material highlights of ${materialsStr}`);
   }
 
@@ -534,7 +534,7 @@ function buildFinalPrompt({
   }
 
   return promptParts
-    .map(part => part.trim())
+    .map((part: any) => part.trim())
     .filter(Boolean)
     .join(', ');
 }
