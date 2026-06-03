@@ -226,6 +226,68 @@ def heartbeat_loop():
     except Exception as e:
         print(f"Failed to report offline status: {e}", file=sys.stderr)
 
+def recover_stale_jobs(conn):
+    """
+    Checks for jobs in 'claimed' or 'processing' status whose assigned worker is offline.
+    Reschedules them to 'queued' if retry_count < max_retries, otherwise marks them 'failed'.
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute("BEGIN;")
+        stale_threshold = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=30)
+        cur.execute("""
+            SELECT r.id, r.retry_count, r.max_retries, r.worker_id
+            FROM render_jobs r
+            LEFT JOIN workers w ON r.worker_id = w.id
+            WHERE r.status IN ('claimed', 'processing')
+              AND (
+                w.id IS NULL 
+                OR w.status = 'offline' 
+                OR w.last_heartbeat < %s
+                OR w.last_heartbeat IS NULL
+              )
+            FOR UPDATE;
+        """, (stale_threshold,))
+        stale_jobs = cur.fetchall()
+        
+        if stale_jobs:
+            for job_id, retry_count, max_retries, worker_id in stale_jobs:
+                print(f"[{datetime.datetime.now().strftime('%T')}] Recovering stale job {job_id} from worker {worker_id}...")
+                if retry_count < max_retries:
+                    new_retry = retry_count + 1
+                    cur.execute("""
+                        UPDATE render_jobs
+                        SET status = 'queued', retry_count = %s, failed_at = %s, error_message = %s, worker_id = NULL
+                        WHERE id = %s;
+                    """, (new_retry, datetime.datetime.now(datetime.timezone.utc), f"Worker offline. Rescheduled (Retry {new_retry}/{max_retries}).", job_id))
+                    
+                    event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                    cur.execute("""
+                        INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                        VALUES (%s, %s, 'queued', %s, '{}', %s);
+                    """, (event_id, job_id, f"Stale job recovered. Previous worker: {worker_id}. Rescheduled for retry.", datetime.datetime.now(datetime.timezone.utc)))
+                else:
+                    cur.execute("""
+                        UPDATE render_jobs
+                        SET status = 'failed', failed_at = %s, error_message = %s
+                        WHERE id = %s;
+                    """, (datetime.datetime.now(datetime.timezone.utc), "Job failed: Worker heartbeat went offline too long (stale claimed job recovery limit reached).", job_id))
+                    
+                    event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                    cur.execute("""
+                        INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                        VALUES (%s, %s, 'failed', %s, '{}', %s);
+                    """, (event_id, job_id, "Job failed: Worker offline. Max retries exceeded.", datetime.datetime.now(datetime.timezone.utc)))
+        cur.execute("COMMIT;")
+    except Exception as e:
+        try:
+            cur.execute("ROLLBACK;")
+        except Exception:
+            pass
+        print(f"Failed to recover stale jobs: {e}", file=sys.stderr)
+    finally:
+        cur.close()
+
 def claim_job(conn, job_id=None):
     """
     Transaction-safe raw SQL claim locking the oldest queued job row or a specific job ID.
@@ -237,14 +299,14 @@ def claim_job(conn, job_id=None):
         if job_id:
             # Claim the specific job
             cur.execute("""
-                SELECT id, project_id, settings_json FROM render_jobs
+                SELECT id, project_id, settings_json, retry_count, max_retries FROM render_jobs
                 WHERE id = %s AND status = 'queued'
                 FOR UPDATE;
             """, (job_id,))
         else:
             # Select the oldest queued job and lock the row to avoid parallel claims
             cur.execute("""
-                SELECT id, project_id, settings_json FROM render_jobs
+                SELECT id, project_id, settings_json, retry_count, max_retries FROM render_jobs
                 WHERE status = 'queued'
                 ORDER BY created_at ASC
                 LIMIT 1
@@ -256,7 +318,7 @@ def claim_job(conn, job_id=None):
             conn.commit()
             return None
             
-        claimed_job_id, project_id, settings_json = row
+        claimed_job_id, project_id, settings_json, retry_count, max_retries = row
         
         # Update job status and set claiming worker
         cur.execute("""
@@ -277,7 +339,9 @@ def claim_job(conn, job_id=None):
         return {
             "id": claimed_job_id,
             "project_id": project_id,
-            "settings_json": settings_json
+            "settings_json": settings_json,
+            "retry_count": retry_count,
+            "max_retries": max_retries
         }
     except Exception as e:
         conn.rollback()
@@ -313,9 +377,9 @@ def process_job(conn, job):
             review_message = " | ".join(a for a in adjustments if a.startswith("[NEEDS_REVIEW]"))
             cur.execute("""
                 UPDATE render_jobs
-                SET status = 'needs_review', error_message = %s
+                SET status = 'needs_review', error_message = %s, failed_at = %s
                 WHERE id = %s;
-            """, (review_message, job_id))
+            """, (review_message, datetime.datetime.now(datetime.timezone.utc), job_id))
 
             event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
             cur.execute("""
@@ -803,22 +867,55 @@ def process_job(conn, job):
         conn.rollback()
         print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} encountered execution error: {e}", file=sys.stderr)
         
-        try:
-            cur.execute("""
-                UPDATE render_jobs
-                SET status = 'failed', error_message = %s, completed_at = %s
-                WHERE id = %s;
-            """, (str(e), datetime.datetime.now(datetime.timezone.utc), job_id))
+        # Clean up partial workspace
+        workspace_dir = os.path.join(config.LOCAL_WORKSPACE_ROOT, "jobs", job_id)
+        if os.path.exists(workspace_dir):
+            print(f"[{datetime.datetime.now().strftime('%T')}] Cleaning up partial workspace for job {job_id}...")
+            import shutil
+            shutil.rmtree(workspace_dir, ignore_errors=True)
             
-            event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
-            cur.execute("""
-                INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
-                VALUES (%s, %s, 'failed', %s, '{}', %s);
-            """, (event_id, job_id, f"Render execution failed: {e}", datetime.datetime.now(datetime.timezone.utc)))
-            conn.commit()
+        cur_fail = None
+        try:
+            retry_count = job.get("retry_count", 0)
+            max_retries = job.get("max_retries", 3)
+            
+            cur_fail = conn.cursor()
+            if retry_count < max_retries:
+                new_retry = retry_count + 1
+                cur_fail.execute("""
+                    UPDATE render_jobs
+                    SET status = 'queued', retry_count = %s, error_message = %s, failed_at = %s, progress = 0
+                    WHERE id = %s;
+                """, (new_retry, str(e), datetime.datetime.now(datetime.timezone.utc), job_id))
+                
+                event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                cur_fail.execute("""
+                    INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                    VALUES (%s, %s, 'failed', %s, '{}', %s);
+                """, (event_id, job_id, f"Render execution failed (Retry {new_retry}/{max_retries}): {e}", datetime.datetime.now(datetime.timezone.utc)))
+                conn.commit()
+                print(f"[{datetime.datetime.now().strftime('%T')}] Rescheduled job {job_id} for retry ({new_retry}/{max_retries}).")
+            else:
+                cur_fail.execute("""
+                    UPDATE render_jobs
+                    SET status = 'failed', error_message = %s, failed_at = %s
+                    WHERE id = %s;
+                """, (str(e), datetime.datetime.now(datetime.timezone.utc), job_id))
+                
+                event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                cur_fail.execute("""
+                    INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                    VALUES (%s, %s, 'failed', %s, '{}', %s);
+                """, (event_id, job_id, f"Render execution failed permanently (Max retries exceeded): {e}", datetime.datetime.now(datetime.timezone.utc)))
+                conn.commit()
+                print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} failed permanently (Max retries exceeded).")
         except Exception as log_err:
             print(f"Failed to log job failure details: {log_err}", file=sys.stderr)
-            conn.rollback()
+            if conn:
+                conn.rollback()
+        finally:
+            if cur_fail:
+                cur_fail.close()
     finally:
         cur.close()
         active_job_id = None
@@ -932,10 +1029,12 @@ def main():
             # Attempt to claim a queued job
             if worker_mode == 'manual' and args.job_id:
                 if first_run:
+                    recover_stale_jobs(conn)
                     job = claim_job(conn, job_id=args.job_id)
                 else:
                     job = None
             else:
+                recover_stale_jobs(conn)
                 job = claim_job(conn)
                 
             if job:

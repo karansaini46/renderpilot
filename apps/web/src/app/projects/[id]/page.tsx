@@ -55,9 +55,12 @@ interface RenderJob {
   id: string;
   projectId: string;
   workerId: string | null;
-  status: 'queued' | 'claimed' | 'processing' | 'completed' | 'failed' | 'cancelled';
+  status: 'queued' | 'claimed' | 'processing' | 'completed' | 'failed' | 'cancelled' | 'needs_review';
   progress: number;
   errorMessage: string | null;
+  retryCount: number;
+  maxRetries: number;
+  failedAt: string | null;
   settingsJson: string | null;
   createdAt: string;
   completedAt: string | null;
@@ -1278,7 +1281,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                   >
                     <div className="flex items-center justify-between">
                       <span className="text-[11px] font-bold text-slate-300 truncate max-w-[120px] group-hover:text-indigo-400 transition-colors">
-                        {job.id.replace('job_', '#')}
+                        {job.id.replace('job_', '#')} {job.retryCount > 0 && <span className="text-amber-400 font-bold ml-1">(R{job.retryCount})</span>}
                       </span>
                       {job.status === 'queued' && (
                         <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-slate-800 text-slate-400 border border-slate-700">Queued</span>
@@ -1291,6 +1294,9 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                       )}
                       {job.status === 'completed' && (
                         <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">Completed</span>
+                      )}
+                      {job.status === 'needs_review' && (
+                        <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-amber-500/10 text-amber-400 border border-amber-500/25">Needs Review</span>
                       )}
                       {(job.status === 'failed' || job.status === 'cancelled') && (
                         <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-rose-500/10 text-rose-400 border border-rose-500/25">Failed</span>
@@ -1590,6 +1596,9 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                     {selectedJob.status === 'completed' && (
                       <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 uppercase tracking-wider">Completed</span>
                     )}
+                    {selectedJob.status === 'needs_review' && (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/25 uppercase tracking-wider">Needs Review</span>
+                    )}
                     {(selectedJob.status === 'failed' || selectedJob.status === 'cancelled') && (
                       <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/25 uppercase tracking-wider">Failed</span>
                     )}
@@ -1628,10 +1637,22 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                       <span className="text-slate-500">Queued At</span>
                       <span>{new Date(selectedJob.createdAt).toLocaleString()}</span>
                     </div>
+                    {selectedJob.retryCount > 0 && (
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Retry Attempts</span>
+                        <span className="text-amber-400 font-semibold">{selectedJob.retryCount} / {selectedJob.maxRetries}</span>
+                      </div>
+                    )}
                     {selectedJob.completedAt && (
                       <div className="flex justify-between">
                         <span className="text-slate-500">Finished At</span>
                         <span>{new Date(selectedJob.completedAt).toLocaleString()}</span>
+                      </div>
+                    )}
+                    {selectedJob.failedAt && (
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Failed At</span>
+                        <span>{new Date(selectedJob.failedAt).toLocaleString()}</span>
                       </div>
                     )}
                     {selectedJob.errorMessage && (
