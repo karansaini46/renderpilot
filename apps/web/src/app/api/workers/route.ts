@@ -13,7 +13,7 @@ export async function GET() {
     });
 
     const now = Date.now();
-    const evaluatedWorkers = workers.map((worker) => {
+    const evaluatedWorkers = workers.map((worker: any) => {
       const lastSeen = worker.lastSeenAt || worker.lastHeartbeat;
       // If last_seen_at is older than 60 seconds (60000ms) or not present, it's offline
       const isOffline = !lastSeen || (now - new Date(lastSeen).getTime() > 60000);
