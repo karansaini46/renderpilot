@@ -28,6 +28,7 @@ class WorkerConfig:
     LOCAL_RESOURCE_LOCK_ENABLED: bool = True
     LOCAL_RESOURCE_LOCK_TIMEOUT_MINUTES: int = 60
     LOCAL_PROMPT_MODEL_ENABLED: bool = False
+    BLENDER_PIPELINE_ENABLED: bool = False
 
 REQUIRED_WORKER_ENV_VARS = [
     'DATABASE_URL',
@@ -73,6 +74,7 @@ def validate_config() -> WorkerConfig:
         LOCAL_RESOURCE_LOCK_ENABLED=os.environ.get('LOCAL_RESOURCE_LOCK_ENABLED', 'true').lower() == 'true',
         LOCAL_RESOURCE_LOCK_TIMEOUT_MINUTES=int(os.environ.get('LOCAL_RESOURCE_LOCK_TIMEOUT_MINUTES', '60')),
         LOCAL_PROMPT_MODEL_ENABLED=os.environ.get('LOCAL_PROMPT_MODEL_ENABLED', 'false').lower() == 'true',
+        BLENDER_PIPELINE_ENABLED=os.environ.get('BLENDER_PIPELINE_ENABLED', 'false').lower() == 'true',
     )
 
 # Validate at module load time to ensure we halt startup if variables are missing

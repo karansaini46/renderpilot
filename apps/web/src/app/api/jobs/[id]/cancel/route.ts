@@ -29,7 +29,7 @@ export async function POST(
     }
 
     // Perform cancel updates inside a transaction
-    const updatedJob = await prisma.$transaction(async (tx) => {
+    const updatedJob = await prisma.$transaction(async (tx: any) => {
       const updated = await tx.renderJob.update({
         where: { id },
         data: {
