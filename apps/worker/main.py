@@ -14,7 +14,7 @@ from config import config
 from capacity import load_profile, downshift_job_settings, requires_review, LAPTOP_PROFILE
 from storage import downloadFileToWorker, uploadFileFromWorker
 from comfyui_client import ComfyUIClient, ComfyUIConnectionError, ComfyUIExecutionError
-from blender_pipeline import run_blender_pipeline
+from blender_pipeline import run_blender_pipeline, run_camera_preview_pipeline
 
 # Control flag for grace shutdown handling
 running = True
@@ -435,12 +435,56 @@ def process_job(conn, job):
             print(f"[{datetime.datetime.now().strftime('%T')}] Downloading input model from S3: {file_url} -> {local_blend_path}")
             downloadFileToWorker(file_url, local_blend_path)
             
+            selected_camera = settings.get("selected_camera")
+            if not selected_camera:
+                # Phase 1: Camera Preview and Auto-Setup Generation
+                print(f"[{datetime.datetime.now().strftime('%T')}] No camera selection found. Generating candidates...")
+                
+                # Update progress
+                cur.execute("UPDATE render_jobs SET progress = 20 WHERE id = %s;", (job_id,))
+                conn.commit()
+                
+                candidates = run_camera_preview_pipeline(job_id, project_id, user_id, local_blend_path)
+                
+                # Update settings_json in the DB with the candidates
+                settings["camera_candidates"] = candidates
+                updated_settings_json = json.dumps(settings)
+                
+                cur.execute("""
+                    UPDATE render_jobs
+                    SET status = 'waiting_for_camera', progress = 50, settings_json = %s
+                    WHERE id = %s;
+                """, (updated_settings_json, job_id))
+                
+                event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                cur.execute("""
+                    INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                    VALUES (%s, %s, 'waiting_for_camera', 'Camera preview candidates generated. Awaiting user selection.', %s, %s);
+                """, (
+                    event_id, job_id,
+                    json.dumps({"camera_candidates": candidates}),
+                    datetime.datetime.now(datetime.timezone.utc)
+                ))
+                conn.commit()
+                
+                # Clean up workspace
+                import shutil
+                if os.path.exists(workspace_dir):
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Cleaning up workspace for job {job_id}...")
+                    shutil.rmtree(workspace_dir, ignore_errors=True)
+                    
+                print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} is now waiting for user camera selection.")
+                return
+
+            # Phase 2: Full Render (camera selected)
+            print(f"[{datetime.datetime.now().strftime('%T')}] Found selected camera. Proceeding with full render...")
+            
             # Update progress
             cur.execute("UPDATE render_jobs SET progress = 30 WHERE id = %s;", (job_id,))
             conn.commit()
 
-            # Execute Blender pipeline
-            blender_result = run_blender_pipeline(job_id, project_id, json.dumps(settings), local_blend_path)
+            # Execute Blender pipeline passing the custom camera config
+            blender_result = run_blender_pipeline(job_id, project_id, json.dumps(settings), local_blend_path, selected_camera)
             
             # Update progress after rendering
             cur.execute("UPDATE render_jobs SET progress = 70 WHERE id = %s;", (job_id,))

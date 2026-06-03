@@ -1,10 +1,6 @@
 """
 Blender processing pipeline module.
-Executes headless Blender rendering to export control passes:
-- Base render
-- Depth map
-- Line map
-- Normal map
+Executes headless Blender rendering to export camera previews and control passes.
 """
 
 import os
@@ -13,38 +9,177 @@ import subprocess
 import glob
 import shutil
 import datetime
+import json
 from config import config
 
-def write_render_script(script_path: str) -> None:
+def write_camera_preview_script(script_path: str) -> None:
+    """
+    Writes the camera preview generator script to a file.
+    """
+    script_content = """import bpy
+import os
+import sys
+import json
+import mathutils
+
+def get_scene_bounding_box():
+    meshes = [obj for obj in bpy.context.scene.objects if obj.type == 'MESH']
+    if not meshes:
+        return mathutils.Vector((0.0, 0.0, 0.0)), mathutils.Vector((2.0, 2.0, 2.0)), 0.0
+        
+    min_x = min_y = min_z = float('inf')
+    max_x = max_y = max_z = float('-inf')
+    
+    for obj in meshes:
+        for corner in obj.bound_box:
+            world_corner = obj.matrix_world @ mathutils.Vector(corner)
+            min_x = min(min_x, world_corner.x)
+            min_y = min(min_y, world_corner.y)
+            min_z = min(min_z, world_corner.z)
+            max_x = max(max_x, world_corner.x)
+            max_y = max(max_y, world_corner.y)
+            max_z = max(max_z, world_corner.z)
+            
+    center = mathutils.Vector(((min_x + max_x) / 2.0, (min_y + max_y) / 2.0, (min_z + max_z) / 2.0))
+    size = mathutils.Vector((max_x - min_x, max_y - min_y, max_z - min_z))
+    return center, size, min_z
+
+def setup_and_render_previews(output_dir):
+    try:
+        bpy.context.scene.render.engine = 'BLENDER_EEVEE_NEXT'
+    except TypeError:
+        try:
+            bpy.context.scene.render.engine = 'BLENDER_EEVEE'
+        except TypeError:
+            bpy.context.scene.render.engine = 'BLENDER_WORKBENCH'
+            
+    if hasattr(bpy.context.scene, "eevee"):
+        try:
+            bpy.context.scene.eevee.taa_render_samples = 4
+        except AttributeError:
+            pass
+        
+    bpy.context.scene.render.resolution_x = 256
+    bpy.context.scene.render.resolution_y = 256
+    bpy.context.scene.render.resolution_percentage = 100
+    
+    center, size, min_z = get_scene_bounding_box()
+    max_dim = max(size.x, size.y, size.z)
+    if max_dim < 0.1:
+        max_dim = 1.0
+        
+    # Target empty at center of the model
+    bpy.ops.object.empty_add(location=center)
+    target = bpy.context.active_object
+    
+    candidates = [
+        {
+            "name": "hero",
+            "loc": (center.x + max_dim * 1.2, center.y - max_dim * 1.2, center.z + max_dim * 0.8)
+        },
+        {
+            "name": "eye_level",
+            "loc": (center.x, center.y - max_dim * 1.0, min_z + 1.7)
+        },
+        {
+            "name": "wide",
+            "loc": (center.x - max_dim * 1.8, center.y - max_dim * 2.2, center.z + max_dim * 1.5)
+        }
+    ]
+    
+    camera_data = []
+    
+    for idx, c in enumerate(candidates):
+        bpy.ops.object.camera_add(location=c["loc"])
+        cam = bpy.context.active_object
+        
+        # Constraint to point at target center
+        constraint = cam.constraints.new(type='TRACK_TO')
+        constraint.target = target
+        constraint.track_axis = 'TRACK_NEGATIVE_Z'
+        constraint.up_axis = 'UP_Y'
+        
+        bpy.context.scene.camera = cam
+        bpy.context.view_layer.update()
+        
+        loc = list(cam.location)
+        rot = list(cam.rotation_euler)
+        
+        out_path = os.path.join(output_dir, f"thumbnail_{idx}.png")
+        bpy.context.scene.render.filepath = out_path
+        
+        bpy.ops.render.render(write_still=True)
+        
+        camera_data.append({
+            "index": idx,
+            "name": c["name"],
+            "location": loc,
+            "rotation": rot
+        })
+        
+        bpy.data.objects.remove(cam, do_unlink=True)
+        
+    bpy.data.objects.remove(target, do_unlink=True)
+    
+    with open(os.path.join(output_dir, "camera_candidates.json"), "w") as f:
+        json.dump(camera_data, f)
+
+argv = sys.argv
+if "--" in argv:
+    args = argv[argv.index("--") + 1:]
+    if len(args) >= 1:
+        setup_and_render_previews(args[0])
+"""
+    with open(script_path, "w") as f:
+        f.write(script_content)
+
+def write_render_script(script_path: str, camera_config: dict = None) -> None:
     """
     Writes the compositor pipeline render script to a file.
     """
-    script_content = """import bpy
+    script_content = f"""import bpy
 import os
 import sys
 
 def setup_scene_and_render(output_dir):
     # Set engine to EEVEE (very fast and laptop/RTX 3050 safe)
-    bpy.context.scene.render.engine = 'BLENDER_EEVEE'
-    
+    try:
+        bpy.context.scene.render.engine = 'BLENDER_EEVEE_NEXT'
+    except TypeError:
+        try:
+            bpy.context.scene.render.engine = 'BLENDER_EEVEE'
+        except TypeError:
+            bpy.context.scene.render.engine = 'BLENDER_WORKBENCH'
+            
     # Configure low samples
     if hasattr(bpy.context.scene, "eevee"):
-        bpy.context.scene.eevee.taa_render_samples = 8
+        try:
+            bpy.context.scene.eevee.taa_render_samples = 8
+        except AttributeError:
+            pass
         
     # Enforce safe resolution (no extreme resolutions)
     bpy.context.scene.render.resolution_x = 768
     bpy.context.scene.render.resolution_y = 768
     bpy.context.scene.render.resolution_percentage = 100
     
-    # Ensure camera exists in scene
-    cameras = [obj for obj in bpy.context.scene.objects if obj.type == 'CAMERA']
-    if not cameras:
-        # Create a temporary camera pointing at the center
-        bpy.ops.object.camera_add(location=(10, -10, 10), rotation=(1.1, 0, 0.785))
+    camera_config = {repr(camera_config)}
+    
+    if camera_config:
+        # Spawn camera at user-selected coordinates
+        bpy.ops.object.camera_add(location=camera_config["location"], rotation=camera_config["rotation"])
         camera = bpy.context.active_object
         bpy.context.scene.camera = camera
     else:
-        bpy.context.scene.camera = cameras[0]
+        # Ensure camera exists in scene
+        cameras = [obj for obj in bpy.context.scene.objects if obj.type == 'CAMERA']
+        if not cameras:
+            # Create a temporary camera pointing at the center
+            bpy.ops.object.camera_add(location=(10, -10, 10), rotation=(1.1, 0, 0.785))
+            camera = bpy.context.active_object
+            bpy.context.scene.camera = camera
+        else:
+            bpy.context.scene.camera = cameras[0]
         
     # Enable Compositor Nodes
     bpy.context.scene.use_nodes = True
@@ -65,8 +200,8 @@ def setup_scene_and_render(output_dir):
     # Create File Output node
     fo = tree.nodes.new('CompositorNodeOutputFile')
     fo.base_path = output_dir
-    fo.file_format = 'PNG'
-    fo.layer_slots.clear()
+    fo.format.file_format = 'PNG'
+    fo.file_slots.clear()
     
     # 1. Base Render slot
     slot_base = fo.file_slots.new('base_render')
@@ -100,8 +235,8 @@ def setup_scene_and_render(output_dir):
     slot_line = fo.file_slots.new('line_map')
     filter_node = tree.nodes.new('CompositorNodeFilter')
     filter_node.filter_type = 'SOBEL'
-    tree.links.new(rl.outputs['Image'], filter_node.inputs['Value'])
-    tree.links.new(filter_node.outputs['Value'], slot_line)
+    tree.links.new(rl.outputs['Image'], filter_node.inputs['Image'])
+    tree.links.new(filter_node.outputs['Image'], slot_line)
     
     # Render
     bpy.ops.render.render(write_still=True)
@@ -116,9 +251,9 @@ if "--" in argv:
     with open(script_path, "w") as f:
         f.write(script_content)
 
-def run_blender_pipeline(job_id: str, project_id: str, settings_json: str, local_blend_path: str) -> dict:
+def run_blender_pipeline(job_id: str, project_id: str, settings_json: str, local_blend_path: str, camera_config: dict = None) -> dict:
     """
-    Runs the Blender headless rendering pipeline.
+    Runs the Blender headless rendering pipeline with an optional camera config.
     """
     print(f"[{datetime.datetime.now().strftime('%T')}] [Blender Pipeline] Starting render pipeline for Job {job_id}")
     
@@ -127,7 +262,7 @@ def run_blender_pipeline(job_id: str, project_id: str, settings_json: str, local
     
     blender_path = config.BLENDER_PATH
     script_path = os.path.join(workspace_dir, "render_passes.py")
-    write_render_script(script_path)
+    write_render_script(script_path, camera_config)
     
     blender_success = False
     
@@ -140,7 +275,6 @@ def run_blender_pipeline(job_id: str, project_id: str, settings_json: str, local
                 "-P", script_path,
                 "--", workspace_dir
             ]
-            # Execute with a timeout to avoid hanging processes on laptop hardware
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if result.returncode == 0:
                 print(f"[{datetime.datetime.now().strftime('%T')}] [Blender Pipeline] Headless rendering completed successfully.")
@@ -184,3 +318,94 @@ def run_blender_pipeline(job_id: str, project_id: str, settings_json: str, local
         "outputs": output_files,
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
     }
+
+def run_camera_preview_pipeline(job_id: str, project_id: str, user_id: str, local_blend_path: str) -> list:
+    """
+    Runs the Blender headless camera preview pipeline to generate 3 camera candidates.
+    """
+    print(f"[{datetime.datetime.now().strftime('%T')}] [Blender Previews] Starting camera setup for Job {job_id}")
+    from storage import uploadFileFromWorker
+    
+    workspace_dir = os.path.join(config.LOCAL_WORKSPACE_ROOT, "blender_jobs", job_id)
+    os.makedirs(workspace_dir, exist_ok=True)
+    
+    blender_path = config.BLENDER_PATH
+    script_path = os.path.join(workspace_dir, "generate_previews.py")
+    write_camera_preview_script(script_path)
+    
+    blender_success = False
+    
+    if blender_path and os.path.exists(blender_path) and local_blend_path and os.path.exists(local_blend_path):
+        try:
+            print(f"[{datetime.datetime.now().strftime('%T')}] [Blender Previews] Launching headless Blender process...")
+            cmd = [
+                blender_path,
+                "-b", local_blend_path,
+                "-P", script_path,
+                "--", workspace_dir
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if result.returncode == 0:
+                print(f"[{datetime.datetime.now().strftime('%T')}] [Blender Previews] Camera candidates generated successfully.")
+                blender_success = True
+            else:
+                print(f"[{datetime.datetime.now().strftime('%T')}] [Blender Previews] Blender exited with code {result.returncode}.", file=sys.stderr)
+                print(f"[Blender Stderr]:\n{result.stderr}", file=sys.stderr)
+        except Exception as e:
+            print(f"[{datetime.datetime.now().strftime('%T')}] [Blender Previews] Error executing Blender subprocess: {e}", file=sys.stderr)
+    else:
+        print(f"[{datetime.datetime.now().strftime('%T')}] [Blender Previews] Skip subprocess: Blender path or input file missing.", file=sys.stderr)
+
+    camera_candidates = []
+    
+    # Load metadata JSON if successful
+    json_path = os.path.join(workspace_dir, "camera_candidates.json")
+    if blender_success and os.path.exists(json_path):
+        try:
+            with open(json_path, "r") as f:
+                camera_candidates = json.load(f)
+        except Exception as json_err:
+            print(f"Failed to read camera candidates JSON: {json_err}", file=sys.stderr)
+            blender_success = False
+            
+    # If Blender execution failed or JSON is missing, generate mock camera candidates
+    if not blender_success or not camera_candidates:
+        print(f"[{datetime.datetime.now().strftime('%T')}] [Blender Previews] Generating mock camera candidates fallback.")
+        camera_candidates = [
+            {"index": 0, "name": "hero", "location": [5.0, -5.0, 3.5], "rotation": [1.1, 0.0, 0.78]},
+            {"index": 1, "name": "eye_level", "location": [0.0, -6.0, 1.7], "rotation": [1.57, 0.0, 0.0]},
+            {"index": 2, "name": "wide", "location": [-8.0, -10.0, 7.0], "rotation": [0.9, 0.0, 0.6]}
+        ]
+        
+    # Upload thumbnails to S3 and add URL to candidates
+    updated_candidates = []
+    for candidate in camera_candidates:
+        idx = candidate["index"]
+        name = candidate["name"]
+        local_thumb = os.path.join(workspace_dir, f"thumbnail_{idx}.png")
+        
+        # If thumbnail file doesn't exist, create a mock text thumbnail
+        if not os.path.exists(local_thumb):
+            with open(local_thumb, "w") as f:
+                f.write(f"SIMULATED_CAMERA_THUMBNAIL: {name.upper()} for Job {job_id}")
+                
+        timestamp_sec = int(datetime.datetime.now().timestamp())
+        s3_key = f"users/{user_id}/projects/{project_id}/outputs/camera_{job_id}_{idx}.png"
+        
+        print(f"[{datetime.datetime.now().strftime('%T')}] Uploading camera {idx} ({name}) preview to S3: {s3_key}")
+        uploadFileFromWorker(local_thumb, s3_key)
+        
+        updated_candidates.append({
+            "index": idx,
+            "name": name,
+            "thumbnail_url": s3_key,
+            "location": candidate["location"],
+            "rotation": candidate["rotation"]
+        })
+        
+    # Cleanup workspace
+    if os.path.exists(workspace_dir):
+        print(f"[{datetime.datetime.now().strftime('%T')}] [Blender Previews] Cleaning up preview workspace...")
+        shutil.rmtree(workspace_dir, ignore_errors=True)
+        
+    return updated_candidates
