@@ -19,7 +19,12 @@ import {
   CheckCircle2,
   XCircle,
   Star,
-  Sparkles
+  Sparkles,
+  Lock,
+  Unlock,
+  Plus,
+  Database,
+  Edit3
 } from 'lucide-react';
 import { STYLE_PRESETS } from '../../../lib/style-presets';
 
@@ -82,7 +87,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'renders' | 'files'>('files');
+  const [activeTab, setActiveTab] = useState<'renders' | 'files' | 'materials'>('files');
 
   const [jobs, setJobs] = useState<RenderJob[]>([]);
   const [isLaunchingJob, setIsLaunchingJob] = useState(false);
@@ -117,6 +122,16 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
   const [selectedProjectType, setSelectedProjectType] = useState('Residential');
   const [selectedMaterials, setSelectedMaterials] = useState<string[]>([]);
   const [selectedGeometryLockMode, setSelectedGeometryLockMode] = useState('accurate');
+
+  // Material Mapping State
+  const [materialMappings, setMaterialMappings] = useState<any[]>([]);
+  const [isLoadingMaterials, setIsLoadingMaterials] = useState(false);
+  const [newZoneName, setNewZoneName] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('wall');
+  const [newFinish, setNewFinish] = useState('');
+  const [newLocked, setNewLocked] = useState(false);
+  const [isSavingMaterial, setIsSavingMaterial] = useState(false);
+  const [editingMaterialId, setEditingMaterialId] = useState<string | null>(null);
 
   const checkWorkerAvailability = async () => {
     try {
@@ -253,9 +268,101 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
     setJobEvents([]);
   };
 
+  const fetchMaterials = async () => {
+    setIsLoadingMaterials(true);
+    try {
+      const res = await fetch(`/api/projects/${id}/materials`);
+      if (res.ok) {
+        const data = await res.json();
+        setMaterialMappings(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch material mappings:', err);
+    } finally {
+      setIsLoadingMaterials(false);
+    }
+  };
+
+  const handleSaveMaterialMapping = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedCategory || !newFinish.trim()) {
+      alert('Please fill out the category and desired finish.');
+      return;
+    }
+
+    setIsSavingMaterial(true);
+    try {
+      const res = await fetch(`/api/projects/${id}/materials`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: editingMaterialId || undefined,
+          objectName: newZoneName.trim() || selectedCategory,
+          detectedClass: selectedCategory,
+          selectedMaterial: newFinish.trim(),
+          locked: newLocked
+        })
+      });
+
+      if (res.ok) {
+        const saved = await res.json();
+        if (editingMaterialId) {
+          setMaterialMappings(materialMappings.map(m => m.id === editingMaterialId ? saved : m));
+        } else {
+          setMaterialMappings([...materialMappings, saved]);
+        }
+        // Reset form
+        setNewZoneName('');
+        setSelectedCategory('wall');
+        setNewFinish('');
+        setNewLocked(false);
+        setEditingMaterialId(null);
+      } else {
+        const err = await res.json();
+        alert(err.error || 'Failed to save material mapping');
+      }
+    } catch (err) {
+      console.error('Error saving material:', err);
+    } finally {
+      setIsSavingMaterial(false);
+    }
+  };
+
+  const handleEditMaterial = (mapping: any) => {
+    setEditingMaterialId(mapping.id);
+    setNewZoneName(mapping.objectName);
+    setSelectedCategory(mapping.detectedClass);
+    setNewFinish(mapping.selectedMaterial);
+    setNewLocked(mapping.locked);
+  };
+
+  const handleDeleteMaterial = async (mappingId: string) => {
+    if (!confirm('Are you sure you want to delete this material mapping?')) return;
+
+    try {
+      const res = await fetch(`/api/projects/${id}/materials`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: mappingId,
+          action: 'delete'
+        })
+      });
+
+      if (res.ok) {
+        setMaterialMappings(materialMappings.filter(m => m.id !== mappingId));
+      } else {
+        alert('Failed to delete mapping');
+      }
+    } catch (err) {
+      console.error('Error deleting material:', err);
+    }
+  };
+
   useEffect(() => {
     fetchProjectData();
     checkWorkerAvailability();
+    fetchMaterials();
   }, [id]);
 
   useEffect(() => {
@@ -600,6 +707,12 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
               >
                 Render Outputs ({(project.renders || []).length})
               </button>
+              <button
+                onClick={() => setActiveTab('materials')}
+                className={`px-4 py-4 text-xs font-semibold uppercase tracking-wider border-b-2 transition-all ${activeTab === 'materials' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
+              >
+                Material Board ({materialMappings.length})
+              </button>
             </div>
 
             <div className="p-6">
@@ -655,7 +768,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
 
                   {/* File Lists / Previews grid */}
                   <div className="space-y-4 pt-4 border-t border-slate-900/60">
-                    <h3 className="text-xs font-bold text-slate-450 uppercase tracking-wider">Uploaded Assets</h3>
+                    <h3 className="text-xs font-bold text-slate-455 uppercase tracking-wider">Uploaded Assets</h3>
                     
                     {filesList.length === 0 ? (
                       <p className="text-slate-500 text-xs italic">No assets uploaded yet.</p>
@@ -690,7 +803,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                                 </div>
                                 <button
                                   onClick={() => handleDeleteFile(file.id, file.fileUrl)}
-                                  className="p-1.5 text-slate-500 hover:text-rose-400 rounded hover:bg-slate-900/50 transition-all"
+                                  className="p-1.5 text-slate-500 hover:text-rose-450 rounded hover:bg-slate-900/50 transition-all"
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />
                                 </button>
@@ -703,11 +816,11 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                   </div>
 
                 </div>
-              ) : (
+              ) : activeTab === 'renders' ? (
                 /* Renders outputs tab */
                 (project.renders || []).length === 0 ? (
                   <div className="text-center py-12">
-                    <Sliders className="h-10 w-10 text-slate-600 mx-auto" />
+                    <Sliders className="h-10 w-10 text-slate-650 mx-auto" />
                     <p className="text-slate-400 text-sm mt-3">No images rendered yet. Click &apos;Launch Render Job&apos; to begin.</p>
                   </div>
                 ) : (
@@ -743,7 +856,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                             </div>
                           </div>
                           <div className="absolute top-2.5 right-2.5">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${render.status === 'approved' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/25' : render.status === 'rejected' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/25' : 'bg-slate-800 text-slate-450 border border-slate-700'}`}>
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${render.status === 'approved' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/25' : render.status === 'rejected' ? 'bg-rose-500/10 text-rose-450 border border-rose-500/25' : 'bg-slate-800 text-slate-450 border border-slate-700'}`}>
                               {render.status}
                             </span>
                           </div>
@@ -772,6 +885,186 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                     ))}
                   </div>
                 )
+              ) : (
+                /* Material board tab */
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                  {/* Left Column: Form Editor */}
+                  <div className="bg-slate-950 border border-slate-900 rounded-xl p-5 space-y-4 h-fit">
+                    <h3 className="text-sm font-bold text-slate-200">
+                      {editingMaterialId ? 'Edit Material Specification' : 'Add Material Specification'}
+                    </h3>
+                    <form onSubmit={handleSaveMaterialMapping} className="space-y-4">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5">
+                          Zone / Object Name
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Dining floor, East window frame"
+                          value={newZoneName}
+                          onChange={(e) => setNewZoneName(e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-205 placeholder-slate-600 focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-4">
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5">
+                            Material Category
+                          </label>
+                          <select
+                            value={selectedCategory}
+                            onChange={(e) => setSelectedCategory(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-250 focus:outline-none focus:border-indigo-500"
+                          >
+                            {['wall', 'floor', 'ceiling', 'glass', 'frame', 'wood', 'stone', 'concrete', 'metal', 'vegetation', 'furniture', 'sky'].map((cat) => (
+                              <option key={cat} value={cat}>{cat.toUpperCase()}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5">
+                          Desired Finish / Material Type
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. polished walnut, brushed travertine, clear double-glazed"
+                          value={newFinish}
+                          onChange={(e) => setNewFinish(e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-205 placeholder-slate-600 focus:outline-none focus:border-indigo-500"
+                          required
+                        />
+                      </div>
+
+                      <div className="flex items-center space-x-2.5 pt-2">
+                        <input
+                          type="checkbox"
+                          id="locked-checkbox"
+                          checked={newLocked}
+                          onChange={(e) => setNewLocked(e.target.checked)}
+                          className="rounded border-slate-800 bg-slate-900 text-indigo-600 focus:ring-0 cursor-pointer h-4 w-4"
+                        />
+                        <label htmlFor="locked-checkbox" className="text-xs text-slate-300 font-medium select-none cursor-pointer flex items-center space-x-1.5">
+                          <Lock className="h-3.5 w-3.5 text-indigo-400" />
+                          <span>Lock Composition Mapping</span>
+                        </label>
+                      </div>
+                      <p className="text-[10px] text-slate-500 leading-normal">
+                        When locked, this finish details description is automatically merged into the rendering prompts to enforce consistency.
+                      </p>
+
+                      <div className="flex items-center gap-2 pt-2">
+                        <button
+                          type="submit"
+                          disabled={isSavingMaterial}
+                          className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2.5 rounded-lg transition-colors flex items-center justify-center space-x-1.5 disabled:opacity-50"
+                        >
+                          {isSavingMaterial ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : editingMaterialId ? (
+                            <Check className="h-3.5 w-3.5" />
+                          ) : (
+                            <Plus className="h-3.5 w-3.5" />
+                          )}
+                          <span>{editingMaterialId ? 'Save Changes' : 'Add to Specification'}</span>
+                        </button>
+                        {editingMaterialId && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingMaterialId(null);
+                              setNewZoneName('');
+                              setSelectedCategory('wall');
+                              setNewFinish('');
+                              setNewLocked(false);
+                            }}
+                            className="bg-slate-800 hover:bg-slate-750 text-slate-350 text-xs font-bold py-2.5 px-3.5 rounded-lg transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        )}
+                      </div>
+                    </form>
+                  </div>
+
+                  {/* Right Column: List */}
+                  <div className="lg:col-span-2 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xs font-bold text-slate-455 uppercase tracking-wider">
+                        Active Material Board Specification ({materialMappings.length})
+                      </h3>
+                      {isLoadingMaterials && <Loader2 className="h-3.5 w-3.5 text-indigo-400 animate-spin" />}
+                    </div>
+
+                    {materialMappings.length === 0 ? (
+                      <div className="text-center py-12 border border-dashed border-slate-900 rounded-xl bg-slate-950/20">
+                        <Database className="h-8 w-8 text-slate-700 mx-auto mb-2" />
+                        <p className="text-slate-500 text-xs italic">No materials specified for this project yet.</p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {materialMappings.map((mapping) => (
+                          <div 
+                            key={mapping.id}
+                            className={`bg-slate-950 border rounded-xl p-4.5 flex flex-col justify-between space-y-3.5 relative transition-all duration-300 ${
+                              mapping.locked 
+                                ? 'border-indigo-500/20 shadow-[0_0_12px_rgba(99,102,241,0.03)]' 
+                                : 'border-slate-900'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <h4 className="text-xs font-bold text-slate-200 truncate">{mapping.objectName}</h4>
+                                <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[8px] font-extrabold uppercase bg-slate-900 text-slate-400 border border-slate-800">
+                                  {mapping.detectedClass}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center space-x-1 shrink-0">
+                                {mapping.locked ? (
+                                  <span className="flex items-center space-x-1 px-2 py-0.5 bg-indigo-950/80 border border-indigo-500/25 rounded text-[8px] font-bold text-indigo-400 uppercase tracking-wider">
+                                    <Lock className="h-2.5 w-2.5" />
+                                    <span>Locked</span>
+                                  </span>
+                                ) : (
+                                  <span className="flex items-center space-x-1 px-2 py-0.5 bg-slate-900 border border-slate-800 rounded text-[8px] font-bold text-slate-500 uppercase tracking-wider">
+                                    <Unlock className="h-2.5 w-2.5" />
+                                    <span>Unlocked</span>
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="bg-slate-900/40 border border-slate-900/60 rounded-lg p-2.5">
+                              <span className="block text-[8px] text-slate-550 font-bold uppercase tracking-wider mb-0.5">Finish / Details</span>
+                              <span className="text-xs font-medium text-slate-300 italic">&ldquo;{mapping.selectedMaterial}&rdquo;</span>
+                            </div>
+
+                            <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-900/60">
+                              <button
+                                onClick={() => handleEditMaterial(mapping)}
+                                className="inline-flex items-center space-x-1 text-slate-500 hover:text-indigo-400 text-[10px] font-bold uppercase tracking-wider transition-colors"
+                              >
+                                <Edit3 className="h-3 w-3" />
+                                <span>Edit</span>
+                              </button>
+                              <span className="text-slate-800">|</span>
+                              <button
+                                onClick={() => handleDeleteMaterial(mapping.id)}
+                                className="inline-flex items-center space-x-1 text-slate-550 hover:text-rose-450 text-[10px] font-bold uppercase tracking-wider transition-colors"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                                <span>Delete</span>
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
           </div>

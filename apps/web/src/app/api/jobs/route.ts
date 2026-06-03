@@ -133,13 +133,40 @@ export async function POST(request: Request) {
       console.error('[Preference Memory Lookup Error]:', memoryErr.message);
     }
 
+    // Retrieve locked material mappings from the database for this project
+    let dbLockedMaterials: string[] = [];
+    try {
+      const lockedMappings = await prisma.materialMapping.findMany({
+        where: {
+          projectId: projectId,
+          locked: true
+        }
+      });
+      dbLockedMaterials = lockedMappings.map(m => {
+        const finish = (m.selectedMaterial || '').trim();
+        const zone = (m.detectedClass || '').trim();
+        if (finish && zone) {
+          return `${finish} ${zone}`;
+        }
+        return finish || zone;
+      }).filter(Boolean);
+    } catch (dbErr: any) {
+      console.error('[Jobs DB Materials Query Error]:', dbErr.message);
+    }
+
+    // Merge UI material choices and database locked material choices
+    const combinedMaterials = Array.from(new Set([
+      ...materialChoices,
+      ...dbLockedMaterials
+    ]));
+
     // Compile prompt using the prompt builder combining chosen components
     const baseTemplate = finalSettings.prompt || stylePreset.promptTemplate;
     const finalPrompt = buildFinalPrompt({
       projectType,
       sceneType,
       stylePromptTemplate: baseTemplate,
-      materialChoices,
+      materialChoices: combinedMaterials,
       memoryPrompt: memoryApplied ? finalSettings.prompt : undefined
     });
 
@@ -149,7 +176,7 @@ export async function POST(request: Request) {
     // Explicit user selections
     finalSettings.projectType = projectType;
     finalSettings.sceneType = sceneType;
-    finalSettings.materialChoices = materialChoices;
+    finalSettings.materialChoices = combinedMaterials;
 
     // Apply any explicit technical overrides if present (just in case)
     if (userSettings.steps) finalSettings.steps = userSettings.steps;
