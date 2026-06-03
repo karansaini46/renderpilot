@@ -110,7 +110,7 @@ export default async function Dashboard() {
                 <span className="text-xs text-slate-500">No active rendering jobs currently in progress.</span>
               </div>
             ) : (
-              activeJobs.map((job) => (
+              activeJobs.map((job: any) => (
                 <div key={job.id} className="p-4 rounded-lg bg-slate-900/40 border border-slate-900/60 hover:border-slate-800/80 transition-colors">
                   <div className="flex items-start justify-between gap-3">
                     <div>
@@ -161,7 +161,7 @@ export default async function Dashboard() {
                 <span className="text-xs text-slate-500">No projects created yet.</span>
               </div>
             ) : (
-              recentProjects.map((project) => (
+              recentProjects.map((project: any) => (
                 <Link 
                   key={project.id} 
                   href={`/projects/${project.id}`}
