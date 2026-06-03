@@ -4,8 +4,9 @@ from dataclasses import dataclass
 
 # Load environment variables from .env file if available, traversing upwards
 try:
-    from dotenv import load_dotenv, find_dotenv
-    load_dotenv(find_dotenv())
+    if os.environ.get('SKIP_DOTENV', 'false').lower() != 'true':
+        from dotenv import load_dotenv, find_dotenv
+        load_dotenv(find_dotenv())
 except ImportError:
     pass
 

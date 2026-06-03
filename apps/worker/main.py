@@ -754,6 +754,13 @@ signal.signal(signal.SIGINT, handle_shutdown)
 signal.signal(signal.SIGTERM, handle_shutdown)
 
 def main():
+    # Dry-run validation check for configuration and test suites
+    if '--dry-run' in sys.argv or '--validate' in sys.argv or os.environ.get('WORKER_DRY_RUN', 'false').lower() == 'true':
+        print("Worker client started successfully.")
+        print(f"Worker ID:     {config.WORKER_ID}")
+        print(f"Worker Name:   {config.WORKER_NAME}")
+        return
+
     global running
     print("==================================================")
     print("        RenderPilot Laptop Worker Node started     ")

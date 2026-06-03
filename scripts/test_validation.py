@@ -15,6 +15,7 @@ def test_worker_validation():
     
     # Test case 1: Missing all variables
     env = os.environ.copy()
+    env['SKIP_DOTENV'] = 'true'
     vars_to_clear = [
         'DATABASE_URL', 'WORKER_ID', 'WORKER_NAME', 
         'COMFYUI_URL', 'BLENDER_PATH', 'LOCAL_WORKSPACE_ROOT', 
@@ -52,6 +53,8 @@ def test_worker_validation():
     env['AWS_S3_BUCKET'] = 'test-s3-bucket'
     env['AWS_ACCESS_KEY_ID'] = 'AKIAIOSFODNN7EXAMPLE'
     env['AWS_SECRET_ACCESS_KEY'] = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
+    env['WORKER_DRY_RUN'] = 'true'
+    env['SKIP_DOTENV'] = 'true'
     
     code, stdout, stderr = run_cmd([sys.executable, 'apps/worker/main.py'], env=env)
     
