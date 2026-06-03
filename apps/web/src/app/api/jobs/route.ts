@@ -32,7 +32,7 @@ async function recoverStaleJobs() {
 
       if (retryCount < maxRetries) {
         const newRetry = retryCount + 1;
-        await prisma.$transaction(async (tx) => {
+        await prisma.$transaction(async (tx: any) => {
           await tx.renderJob.update({
             where: { id: job.id },
             data: {
@@ -55,7 +55,7 @@ async function recoverStaleJobs() {
         });
         console.log(`[Stale Job Recovery]: Rescheduled job ${job.id} (Retry ${newRetry}/${maxRetries})`);
       } else {
-        await prisma.$transaction(async (tx) => {
+        await prisma.$transaction(async (tx: any) => {
           await tx.renderJob.update({
             where: { id: job.id },
             data: {
@@ -206,7 +206,7 @@ export async function POST(request: Request) {
         projectId: projectId
       });
 
-      const newJob = await prisma.$transaction(async (tx) => {
+      const newJob = await prisma.$transaction(async (tx: any) => {
         const createdJob = await tx.renderJob.create({
           data: {
             id: jobId,
@@ -380,7 +380,7 @@ export async function POST(request: Request) {
     const jobSettings = JSON.stringify(finalSettings);
 
     // Create the job and its initial event log record inside a transaction
-    const newJob = await prisma.$transaction(async (tx) => {
+    const newJob = await prisma.$transaction(async (tx: any) => {
       const createdJob = await tx.renderJob.create({
         data: {
           id: jobId,
