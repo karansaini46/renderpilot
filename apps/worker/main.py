@@ -14,6 +14,7 @@ from config import config
 from capacity import load_profile, downshift_job_settings, requires_review, LAPTOP_PROFILE
 from storage import downloadFileToWorker, uploadFileFromWorker
 from comfyui_client import ComfyUIClient, ComfyUIConnectionError, ComfyUIExecutionError
+from blender_pipeline import run_blender_pipeline
 
 # Control flag for grace shutdown handling
 running = True
@@ -360,6 +361,84 @@ def process_job(conn, job):
     project_id = job["project_id"]
     raw_settings = job.get("settings_json", "{}")
     active_job_id = job_id
+
+    # Parse settings to check job type
+    try:
+        settings = json.loads(raw_settings) if isinstance(raw_settings, str) and raw_settings.strip() else (raw_settings or {})
+    except Exception:
+        settings = {}
+        
+    job_type = settings.get("job_type") or settings.get("jobType")
+    
+    if job_type == "base_render_model":
+        # Check feature flag
+        if not config.BLENDER_PIPELINE_ENABLED:
+            print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} requires Blender pipeline which is disabled behind a feature flag.")
+            cur = conn.cursor()
+            try:
+                review_message = "Job requires Blender pipeline (base_render_model) which is currently disabled behind a feature flag."
+                cur.execute("""
+                    UPDATE render_jobs
+                    SET status = 'needs_review', error_message = %s, failed_at = %s
+                    WHERE id = %s;
+                """, (review_message, datetime.datetime.now(datetime.timezone.utc), job_id))
+
+                event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                cur.execute("""
+                    INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                    VALUES (%s, %s, 'needs_review', %s, '{}', %s);
+                """, (event_id, job_id, f"Job flagged: {review_message}", datetime.datetime.now(datetime.timezone.utc)))
+                conn.commit()
+            except Exception as db_err:
+                conn.rollback()
+                print(f"Failed to flag job: {db_err}", file=sys.stderr)
+            finally:
+                cur.close()
+                active_job_id = None
+            return
+
+        # Execute Blender pipeline placeholder
+        cur = conn.cursor()
+        try:
+            # Update to processing status
+            cur.execute("UPDATE render_jobs SET status = 'processing', progress = 10 WHERE id = %s;", (job_id,))
+            
+            event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+            cur.execute("""
+                INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                VALUES (%s, %s, 'processing', 'Blender CAD pipeline processing initiated.', '{}', %s);
+            """, (event_id, job_id, datetime.datetime.now(datetime.timezone.utc)))
+            conn.commit()
+            
+            # Execute Blender pipeline
+            blender_result = run_blender_pipeline(job_id, project_id, json.dumps(settings))
+            
+            # Update to completed status
+            cur.execute("""
+                UPDATE render_jobs
+                SET status = 'completed', progress = 100, completed_at = %s
+                WHERE id = %s;
+            """, (datetime.datetime.now(datetime.timezone.utc), job_id))
+            
+            event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+            cur.execute("""
+                INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                VALUES (%s, %s, 'completed', %s, %s, %s);
+            """, (
+                event_id, job_id, 
+                "Blender CAD pipeline execution completed successfully.", 
+                json.dumps(blender_result), 
+                datetime.datetime.now(datetime.timezone.utc)
+            ))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"Blender pipeline execution error: {e}", file=sys.stderr)
+            raise e
+        finally:
+            cur.close()
+            active_job_id = None
+        return
 
     # Apply capacity guardrails before processing
     clamped_settings, adjustments = downshift_job_settings(raw_settings, capacity_profile)
