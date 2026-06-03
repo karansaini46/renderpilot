@@ -397,8 +397,9 @@ def process_job(conn, job):
                 active_job_id = None
             return
 
-        # Execute Blender pipeline placeholder
+        # Execute Blender pipeline
         cur = conn.cursor()
+        workspace_dir = os.path.join(config.LOCAL_WORKSPACE_ROOT, "blender_jobs", job_id)
         try:
             # Update to processing status
             cur.execute("UPDATE render_jobs SET status = 'processing', progress = 10 WHERE id = %s;", (job_id,))
@@ -410,15 +411,91 @@ def process_job(conn, job):
             """, (event_id, job_id, datetime.datetime.now(datetime.timezone.utc)))
             conn.commit()
             
-            # Execute Blender pipeline
-            blender_result = run_blender_pipeline(job_id, project_id, json.dumps(settings))
+            # Fetch user_id of the project
+            cur.execute("SELECT user_id FROM projects WHERE id = %s LIMIT 1;", (project_id,))
+            user_row = cur.fetchone()
+            user_id = user_row[0] if user_row and user_row[0] else "default-user"
+
+            # Query the latest .blend project file
+            cur.execute("""
+                SELECT file_url FROM project_files
+                WHERE project_id = %s AND (file_type LIKE 'model/%%' OR file_url LIKE '%%.blend')
+                ORDER BY created_at DESC LIMIT 1;
+            """, (project_id,))
+            file_row = cur.fetchone()
+            if not file_row:
+                raise ValueError(f"No input model file found for project: {project_id}")
             
+            file_url = file_row[0]
+            
+            # Create local job workspace
+            os.makedirs(workspace_dir, exist_ok=True)
+            local_blend_path = os.path.join(workspace_dir, os.path.basename(file_url))
+            
+            print(f"[{datetime.datetime.now().strftime('%T')}] Downloading input model from S3: {file_url} -> {local_blend_path}")
+            downloadFileToWorker(file_url, local_blend_path)
+            
+            # Update progress
+            cur.execute("UPDATE render_jobs SET progress = 30 WHERE id = %s;", (job_id,))
+            conn.commit()
+
+            # Execute Blender pipeline
+            blender_result = run_blender_pipeline(job_id, project_id, json.dumps(settings), local_blend_path)
+            
+            # Update progress after rendering
+            cur.execute("UPDATE render_jobs SET progress = 70 WHERE id = %s;", (job_id,))
+            conn.commit()
+            
+            # Upload outputs to object storage and register metadata
+            uploaded_outputs = {}
+            import shutil
+            for slot_name, local_path in blender_result.get("outputs", {}).items():
+                s3_key = f"users/{user_id}/projects/{project_id}/outputs/blender_{job_id}_{slot_name}.png"
+                
+                print(f"[{datetime.datetime.now().strftime('%T')}] Uploading {slot_name} to S3: {s3_key}")
+                uploadFileFromWorker(local_path, s3_key)
+                uploaded_outputs[slot_name] = s3_key
+                
+                # Register in project_files table
+                file_id = f"file_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                metadata_json = json.dumps({
+                    "size": f"{(os.path.getsize(local_path) / 1024):.2f} KB",
+                    "uploadedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "role": "control_pass",
+                    "pass_type": slot_name,
+                    "sourceJobId": job_id
+                })
+                
+                cur.execute("""
+                    INSERT INTO project_files (id, project_id, file_url, file_type, metadata_json, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s);
+                """, (
+                    file_id,
+                    project_id,
+                    s3_key,
+                    "image/png",
+                    metadata_json,
+                    datetime.datetime.now(datetime.timezone.utc)
+                ))
+            
+            # Clean up local workspace folder after successful execution
+            if os.path.exists(workspace_dir):
+                print(f"[{datetime.datetime.now().strftime('%T')}] Cleaning up workspace for job {job_id}...")
+                shutil.rmtree(workspace_dir, ignore_errors=True)
+
             # Update to completed status
             cur.execute("""
                 UPDATE render_jobs
                 SET status = 'completed', progress = 100, completed_at = %s
                 WHERE id = %s;
             """, (datetime.datetime.now(datetime.timezone.utc), job_id))
+            
+            # Prepare result dictionary to save in events
+            event_details = {
+                "status": blender_result.get("status"),
+                "outputs": uploaded_outputs,
+                "timestamp": blender_result.get("timestamp")
+            }
             
             event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
             cur.execute("""
@@ -427,14 +504,63 @@ def process_job(conn, job):
             """, (
                 event_id, job_id, 
                 "Blender CAD pipeline execution completed successfully.", 
-                json.dumps(blender_result), 
+                json.dumps(event_details), 
                 datetime.datetime.now(datetime.timezone.utc)
             ))
             conn.commit()
         except Exception as e:
             conn.rollback()
             print(f"Blender pipeline execution error: {e}", file=sys.stderr)
-            raise e
+            
+            # Clean up local workspace folder on failure
+            import shutil
+            if os.path.exists(workspace_dir):
+                print(f"[{datetime.datetime.now().strftime('%T')}] Cleaning up workspace for job {job_id} after failure...")
+                shutil.rmtree(workspace_dir, ignore_errors=True)
+                
+            # Log failure to database
+            cur_fail = None
+            try:
+                retry_count = job.get("retry_count", 0)
+                max_retries = job.get("max_retries", 3)
+                
+                cur_fail = conn.cursor()
+                if retry_count < max_retries:
+                    new_retry = retry_count + 1
+                    cur_fail.execute("""
+                        UPDATE render_jobs
+                        SET status = 'queued', retry_count = %s, error_message = %s, failed_at = %s, progress = 0
+                        WHERE id = %s;
+                    """, (new_retry, str(e), datetime.datetime.now(datetime.timezone.utc), job_id))
+                    
+                    event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                    cur_fail.execute("""
+                        INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                        VALUES (%s, %s, 'failed', %s, '{}', %s);
+                    """, (event_id, job_id, f"Blender pipeline execution failed (Retry {new_retry}/{max_retries}): {e}", datetime.datetime.now(datetime.timezone.utc)))
+                    conn.commit()
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Rescheduled job {job_id} for retry ({new_retry}/{max_retries}).")
+                else:
+                    cur_fail.execute("""
+                        UPDATE render_jobs
+                        SET status = 'failed', error_message = %s, failed_at = %s
+                        WHERE id = %s;
+                    """, (str(e), datetime.datetime.now(datetime.timezone.utc), job_id))
+                    
+                    event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                    cur_fail.execute("""
+                        INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                        VALUES (%s, %s, 'failed', %s, '{}', %s);
+                    """, (event_id, job_id, f"Blender pipeline execution failed permanently (Max retries exceeded): {e}", datetime.datetime.now(datetime.timezone.utc)))
+                    conn.commit()
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} failed permanently (Max retries exceeded).")
+            except Exception as log_err:
+                print(f"Failed to log job failure details: {log_err}", file=sys.stderr)
+                if conn:
+                    conn.rollback()
+            finally:
+                if cur_fail:
+                    cur_fail.close()
         finally:
             cur.close()
             active_job_id = None
