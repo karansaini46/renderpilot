@@ -90,6 +90,60 @@ export async function POST(request: Request) {
       userSettings = {};
     }
 
+    if (userSettings.job_type === 'upscale_selected' || userSettings.jobType === 'upscale_selected') {
+      const renderId = userSettings.renderId;
+      if (!renderId) {
+        return NextResponse.json(
+          { error: 'renderId is required for upscale_selected job' },
+          { status: 400 }
+        );
+      }
+
+      // Verify the render exists
+      const render = await prisma.render.findUnique({
+        where: { id: renderId }
+      });
+      if (!render) {
+        return NextResponse.json(
+          { error: 'Selected render not found' },
+          { status: 404 }
+        );
+      }
+
+      const jobId = `job_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+      const jobSettings = JSON.stringify({
+        job_type: 'upscale_selected',
+        renderId: renderId,
+        projectId: projectId
+      });
+
+      const newJob = await prisma.$transaction(async (tx) => {
+        const createdJob = await tx.renderJob.create({
+          data: {
+            id: jobId,
+            projectId: projectId,
+            status: 'queued',
+            progress: 0,
+            settingsJson: jobSettings,
+          }
+        });
+
+        await tx.jobEvent.create({
+          data: {
+            id: `event_${Date.now()}_${Math.floor(Date.now() % 1000)}`,
+            jobId: jobId,
+            eventType: 'queued',
+            message: `Upscale job queued for variation render ID: ${renderId}.`,
+            detailsJson: jobSettings,
+          }
+        });
+
+        return createdJob;
+      });
+
+      return NextResponse.json(newJob, { status: 201 });
+    }
+
     const requestedStyleId = userSettings.styleId || userSettings.stylePreference || project.stylePreference || 'style_mod_lux_ext';
     const sceneType = userSettings.sceneType || project.sceneType || 'Exterior';
     const projectType = userSettings.projectType || project.projectType || 'Residential';

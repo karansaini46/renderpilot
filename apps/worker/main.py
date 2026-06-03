@@ -370,156 +370,189 @@ def process_job(conn, job):
         user_row = cur.fetchone()
         user_id = user_row[0] if user_row and user_row[0] else "default-user"
 
-        # 2. Fetch the latest input reference image from project_files
-        cur.execute("""
-            SELECT file_url FROM project_files 
-            WHERE project_id = %s AND file_type LIKE 'image/%'
-            ORDER BY created_at DESC 
-            LIMIT 1;
-        """, (project_id,))
-        file_row = cur.fetchone()
-        if not file_row:
-            # Fall back to any file type if no specific image type is marked
+        is_upscale = clamped_settings.get("job_type") == "upscale_selected"
+        render_id_to_upscale = clamped_settings.get("renderId")
+
+        if is_upscale:
+            if not render_id_to_upscale:
+                raise ValueError("renderId is required for upscale_selected job")
+            cur.execute("""
+                SELECT preview_url, style_id, prompt, negative_prompt, seed, final_image_url 
+                FROM renders 
+                WHERE id = %s LIMIT 1;
+            """, (render_id_to_upscale,))
+            render_row = cur.fetchone()
+            if not render_row:
+                raise ValueError(f"Render to upscale not found: {render_id_to_upscale}")
+            
+            # The input file is the preview image
+            file_url = render_row[0] or render_row[5]
+            if not file_url:
+                raise ValueError(f"No image URL found for render to upscale: {render_id_to_upscale}")
+                
+            style_id = render_row[1]
+            prompt_text = render_row[2]
+            negative_prompt_text = render_row[3] or ""
+            v_seed = render_row[4]
+            if v_seed is not None:
+                v_seed = int(v_seed)
+            else:
+                v_seed = random.randint(1, 1000000000)
+                
+            variations = 1
+            denoise = 0.25 # Low denoise to preserve composition/details
+        else:
+            # 2. Fetch the latest input reference image from project_files
             cur.execute("""
                 SELECT file_url FROM project_files 
-                WHERE project_id = %s 
+                WHERE project_id = %s AND file_type LIKE 'image/%'
                 ORDER BY created_at DESC 
                 LIMIT 1;
             """, (project_id,))
             file_row = cur.fetchone()
-            
-        if not file_row:
-            raise ValueError(f"No input reference image found for project: {project_id}")
-            
-        file_url = file_row[0]
+            if not file_row:
+                # Fall back to any file type if no specific image type is marked
+                cur.execute("""
+                    SELECT file_url FROM project_files 
+                    WHERE project_id = %s 
+                    ORDER BY created_at DESC 
+                    LIMIT 1;
+                """, (project_id,))
+                file_row = cur.fetchone()
+                
+            if not file_row:
+                raise ValueError(f"No input reference image found for project: {project_id}")
+                
+            file_url = file_row[0]
 
-        # 3. Retrieve style preference template
-        style_id = None
-        style_pref = clamped_settings.get("stylePreference")
-        prompt_text = clamped_settings.get("prompt")
-        negative_prompt_text = clamped_settings.get("negativePrompt") or clamped_settings.get("negative_prompt", "")
-        
-        if not prompt_text:
-            prompt_text = "high quality architectural rendering, photorealistic, natural lighting, detailed materials"
+            # 3. Retrieve style preference template
+            style_id = None
+            style_pref = clamped_settings.get("stylePreference")
+            prompt_text = clamped_settings.get("prompt")
+            negative_prompt_text = clamped_settings.get("negativePrompt") or clamped_settings.get("negative_prompt", "")
             
-        if style_pref:
-            cur.execute("""
-                SELECT id, prompt_template, negative_prompt 
-                FROM styles 
-                WHERE name = %s OR id = %s 
-                LIMIT 1;
-            """, (style_pref, style_pref))
-            style_row = cur.fetchone()
-            if style_row:
-                style_id, prompt_template, style_neg = style_row
-                if not clamped_settings.get("prompt"):
-                    prompt_text = prompt_template
-                if not negative_prompt_text and style_neg:
-                    negative_prompt_text = style_neg
+            if not prompt_text:
+                prompt_text = "high quality architectural rendering, photorealistic, natural lighting, detailed materials"
+                
+            if style_pref:
+                cur.execute("""
+                    SELECT id, prompt_template, negative_prompt 
+                    FROM styles 
+                    WHERE name = %s OR id = %s 
+                    LIMIT 1;
+                """, (style_pref, style_pref))
+                style_row = cur.fetchone()
+                if style_row:
+                    style_id, prompt_template, style_neg = style_row
+                    if not clamped_settings.get("prompt"):
+                        prompt_text = prompt_template
+                    if not negative_prompt_text and style_neg:
+                        negative_prompt_text = style_neg
 
         # 4. Create local job workspace
         workspace_dir = os.path.join(config.LOCAL_WORKSPACE_ROOT, "jobs", job_id)
         os.makedirs(workspace_dir, exist_ok=True)
 
-        # 5. Download the input reference image from object storage
+        # 5. Download the input image
         local_input_filename = f"input_{os.path.basename(file_url)}"
         local_input_path = os.path.join(workspace_dir, local_input_filename)
         
         print(f"[{datetime.datetime.now().strftime('%T')}] Downloading input image from S3: {file_url} -> {local_input_path}")
         downloadFileToWorker(file_url, local_input_path)
 
-        # Acquire lock for CONTROL_MAP_PREPROCESSING
-        if config.LOCAL_RESOURCE_LOCK_ENABLED:
-            acquired = False
-            while not acquired:
-                if not running:
-                    raise KeyboardInterrupt("Termination signal received while waiting for lock")
-                acquired = resource_lock.acquire(job_id, "CONTROL_MAP_PREPROCESSING")
-                if not acquired:
-                    time.sleep(2)
-
-        # 5b. Generate Canny edge control map locally, upload, and register
         local_control_path = None
         s3_control_key = None
-        
-        try:
-            from PIL import Image, ImageFilter
-            local_control_filename = f"canny_{os.path.basename(file_url)}"
-            if not local_control_filename.lower().endswith(".png"):
-                local_control_filename += ".png"
-            local_control_path = os.path.join(workspace_dir, local_control_filename)
-            
-            print(f"[{datetime.datetime.now().strftime('%T')}] Generating lightweight Canny edge control map locally...")
-            with Image.open(local_input_path) as img:
-                gray = img.convert("L")
-                blurred = gray.filter(ImageFilter.GaussianBlur(radius=1.2))
-                edges = blurred.filter(ImageFilter.FIND_EDGES)
-                # Binary thresholding for clean black & white mask
-                crisp_edges = edges.point(lambda p: 255 if p > 25 else 0)
-                final_control = crisp_edges.convert("RGB")
-                final_control.save(local_control_path, "PNG")
-                
-            print(f"[{datetime.datetime.now().strftime('%T')}] Canny edge map generated: {local_control_path}")
-            
-            # Upload control map to object storage
-            timestamp_sec = int(time.time())
-            s3_control_key = f"users/{user_id}/projects/{project_id}/previews/canny_{job_id}_{timestamp_sec}.png"
-            print(f"[{datetime.datetime.now().strftime('%T')}] Uploading control map to S3: {s3_control_key}")
-            uploadFileFromWorker(local_control_path, s3_control_key)
-            
-            # Register in project_files database
-            file_id = f"file_{int(time.time() * 1000)}_{random.randint(0, 999)}"
-            metadata_json = json.dumps({
-                "size": f"{(os.path.getsize(local_control_path) / 1024):.2f} KB",
-                "uploadedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "role": "control_map",
-                "preprocessor": "canny",
-                "sourceJobId": job_id
-            })
-            
-            cur_file = conn.cursor()
-            try:
-                cur_file.execute("""
-                    INSERT INTO project_files (id, project_id, file_url, file_type, metadata_json, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s);
-                """, (
-                    file_id,
-                    project_id,
-                    s3_control_key,
-                    "image/png",
-                    metadata_json,
-                    datetime.datetime.now(datetime.timezone.utc)
-                ))
-                
-                # Log preprocessing job event
-                event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
-                cur_file.execute("""
-                    INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
-                    VALUES (%s, %s, 'preprocessing', %s, %s, %s);
-                """, (
-                    event_id,
-                    job_id,
-                    "preprocessing",
-                    "Canny edge control map preprocessed locally and saved.",
-                    json.dumps({"fileId": file_id, "s3Key": s3_control_key}),
-                    datetime.datetime.now(datetime.timezone.utc)
-                ))
-                conn.commit()
-                print(f"[{datetime.datetime.now().strftime('%T')}] Registered control map in DB: {file_id}")
-            except Exception as db_err:
-                conn.rollback()
-                print(f"Failed to save control map metadata to database: {db_err}", file=sys.stderr)
-            finally:
-                cur_file.close()
-                
-        except Exception as preprocess_err:
-            print(f"Failed to preprocess control map: {preprocess_err}", file=sys.stderr)
-            local_control_path = None
-            s3_control_key = None
 
-        # Release lock for CONTROL_MAP_PREPROCESSING
-        if config.LOCAL_RESOURCE_LOCK_ENABLED:
-            resource_lock.release()
+        if not is_upscale:
+            # Acquire lock for CONTROL_MAP_PREPROCESSING
+            if config.LOCAL_RESOURCE_LOCK_ENABLED:
+                acquired = False
+                while not acquired:
+                    if not running:
+                        raise KeyboardInterrupt("Termination signal received while waiting for lock")
+                    acquired = resource_lock.acquire(job_id, "CONTROL_MAP_PREPROCESSING")
+                    if not acquired:
+                        time.sleep(2)
+
+            # 5b. Generate Canny edge control map locally, upload, and register
+            try:
+                from PIL import Image, ImageFilter
+                local_control_filename = f"canny_{os.path.basename(file_url)}"
+                if not local_control_filename.lower().endswith(".png"):
+                    local_control_filename += ".png"
+                local_control_path = os.path.join(workspace_dir, local_control_filename)
+                
+                print(f"[{datetime.datetime.now().strftime('%T')}] Generating lightweight Canny edge control map locally...")
+                with Image.open(local_input_path) as img:
+                    gray = img.convert("L")
+                    blurred = gray.filter(ImageFilter.GaussianBlur(radius=1.2))
+                    edges = blurred.filter(ImageFilter.FIND_EDGES)
+                    # Binary thresholding for clean black & white mask
+                    crisp_edges = edges.point(lambda p: 255 if p > 25 else 0)
+                    final_control = crisp_edges.convert("RGB")
+                    final_control.save(local_control_path, "PNG")
+                    
+                print(f"[{datetime.datetime.now().strftime('%T')}] Canny edge map generated: {local_control_path}")
+                
+                # Upload control map to object storage
+                timestamp_sec = int(time.time())
+                s3_control_key = f"users/{user_id}/projects/{project_id}/previews/canny_{job_id}_{timestamp_sec}.png"
+                print(f"[{datetime.datetime.now().strftime('%T')}] Uploading control map to S3: {s3_control_key}")
+                uploadFileFromWorker(local_control_path, s3_control_key)
+                
+                # Register in project_files database
+                file_id = f"file_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                metadata_json = json.dumps({
+                    "size": f"{(os.path.getsize(local_control_path) / 1024):.2f} KB",
+                    "uploadedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "role": "control_map",
+                    "preprocessor": "canny",
+                    "sourceJobId": job_id
+                })
+                
+                cur_file = conn.cursor()
+                try:
+                    cur_file.execute("""
+                        INSERT INTO project_files (id, project_id, file_url, file_type, metadata_json, created_at)
+                        VALUES (%s, %s, %s, %s, %s, %s);
+                    """, (
+                        file_id,
+                        project_id,
+                        s3_control_key,
+                        "image/png",
+                        metadata_json,
+                        datetime.datetime.now(datetime.timezone.utc)
+                    ))
+                    
+                    # Log preprocessing job event
+                    event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                    cur_file.execute("""
+                        INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                        VALUES (%s, %s, 'preprocessing', %s, %s, %s);
+                    """, (
+                        event_id,
+                        job_id,
+                        "preprocessing",
+                        "Canny edge control map preprocessed locally and saved.",
+                        json.dumps({"fileId": file_id, "s3Key": s3_control_key}),
+                        datetime.datetime.now(datetime.timezone.utc)
+                    ))
+                    conn.commit()
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Registered control map in DB: {file_id}")
+                except Exception as db_err:
+                    conn.rollback()
+                    print(f"Failed to save control map metadata to database: {db_err}", file=sys.stderr)
+                finally:
+                    cur_file.close()
+                    
+            except Exception as preprocess_err:
+                print(f"Failed to preprocess control map: {preprocess_err}", file=sys.stderr)
+                local_control_path = None
+                s3_control_key = None
+
+            # Release lock for CONTROL_MAP_PREPROCESSING
+            if config.LOCAL_RESOURCE_LOCK_ENABLED:
+                resource_lock.release()
 
         # 6. Read image dimensions to cap them safely
         width = 768
@@ -533,7 +566,11 @@ def process_job(conn, job):
             print(f"Failed to read image dimensions: {img_err}. Using 768px default limit.", file=sys.stderr)
 
         # Clamp dimensions preserving aspect ratio to fit within capacity limit
-        max_res = capacity_profile.get("max_preview_resolution", 768)
+        if is_upscale:
+            max_res = 1536  # High quality target for upscale
+        else:
+            max_res = 512   # Low resolution target for fast preview variations
+            
         if width > max_res or height > max_res:
             if width >= height:
                 height = int(height * (max_res / width))
@@ -573,33 +610,37 @@ def process_job(conn, job):
                 print(f"Failed to upload control map to ComfyUI: {comfy_upload_err}", file=sys.stderr)
 
         # 8. Render variations sequentially
-        variations = clamped_settings.get("variations", 2)
-        if not variations or variations <= 0:
-            variations = 2
-            
-        max_vars = capacity_profile.get("max_variations_per_job", 4)
-        if variations > max_vars:
-            variations = max_vars
+        if not is_upscale:
+            variations = clamped_settings.get("variations", 2)
+            if not variations or variations <= 0:
+                variations = 2
+                
+            max_vars = capacity_profile.get("max_variations_per_job", 4)
+            if variations > max_vars:
+                variations = max_vars
             
         steps = clamped_settings.get("steps", 20)
         cfg_scale = clamped_settings.get("cfg_scale", 7.0)
         
-        # Resolve geometry lock mode and map to denoise
-        geometry_lock_mode = (clamped_settings.get("geometryLockMode") or clamped_settings.get("geometry_lock_mode") or "accurate").lower()
-        mode_denoise_map = {
-            "creative": 0.85,
-            "balanced": 0.65,
-            "accurate": 0.50,
-            "technical": 0.30
-        }
-        
-        # Override denoise based on mode if it matches default or isn't specified
-        denoise = clamped_settings.get("denoise")
-        if denoise is None or denoise == 0.65 or denoise == 0.50 or denoise == 0.70 or denoise == 0.55:
-            denoise = mode_denoise_map.get(geometry_lock_mode, 0.50)
+        if not is_upscale:
+            # Resolve geometry lock mode and map to denoise
+            geometry_lock_mode = (clamped_settings.get("geometryLockMode") or clamped_settings.get("geometry_lock_mode") or "accurate").lower()
+            mode_denoise_map = {
+                "creative": 0.85,
+                "balanced": 0.65,
+                "accurate": 0.50,
+                "technical": 0.30
+            }
             
-        clamped_settings["denoise"] = denoise
-        clamped_settings["geometryLockMode"] = geometry_lock_mode
+            # Override denoise based on mode if it matches default or isn't specified
+            denoise = clamped_settings.get("denoise")
+            if denoise is None or denoise in (0.65, 0.50, 0.70, 0.55):
+                denoise = mode_denoise_map.get(geometry_lock_mode, 0.50)
+                
+            clamped_settings["denoise"] = denoise
+            clamped_settings["geometryLockMode"] = geometry_lock_mode
+        else:
+            geometry_lock_mode = "accurate"
         
         print(f"[{datetime.datetime.now().strftime('%T')}] Launching sequential variation loops ({variations} total)...")
         
@@ -624,7 +665,11 @@ def process_job(conn, job):
                     finally:
                         cur_prog.close()
 
-            v_seed = clamped_settings.get("seed", random.randint(1, 1000000000)) + idx
+            if not is_upscale:
+                v_seed = clamped_settings.get("seed", random.randint(1, 1000000000)) + idx
+            else:
+                v_seed = seed = v_seed  # Use exact same seed
+                
             print(f"[{datetime.datetime.now().strftime('%T')}] Rendering variation {idx + 1}/{variations} with seed {v_seed}")
             
             output_paths = comfy_client.render(
@@ -648,7 +693,7 @@ def process_job(conn, job):
                 raise ComfyUIExecutionError(f"No output image returned from ComfyUI for variation {idx}")
                 
             comfyui_output_path = output_paths[0]
-            local_output_filename = f"output_var_{idx}.png"
+            local_output_filename = f"output_var_{idx}.png" if not is_upscale else f"output_upscale.png"
             local_output_path = os.path.join(workspace_dir, local_output_filename)
             
             # Download completed render image
@@ -661,44 +706,70 @@ def process_job(conn, job):
                 
             # Upload render output to object storage
             timestamp_sec = int(time.time())
-            s3_output_key = f"users/{user_id}/projects/{project_id}/outputs/render_{job_id}_var_{idx}_{timestamp_sec}.png"
+            if not is_upscale:
+                s3_output_key = f"users/{user_id}/projects/{project_id}/outputs/render_{job_id}_var_{idx}_{timestamp_sec}.png"
+            else:
+                s3_output_key = f"users/{user_id}/projects/{project_id}/outputs/render_{job_id}_upscaled_{timestamp_sec}.png"
             
-            print(f"[{datetime.datetime.now().strftime('%T')}] Uploading variation {idx + 1} to S3: {s3_output_key}")
+            print(f"[{datetime.datetime.now().strftime('%T')}] Uploading output to S3: {s3_output_key}")
             uploadFileFromWorker(local_output_path, s3_output_key)
             
-            # Save render metadata row in Neon
-            render_id = f"render_{int(time.time() * 1000)}_{random.randint(0, 999)}"
-            cur.execute("""
-                INSERT INTO renders (
-                    id, job_id, project_id, base_image_url, final_image_url, 
-                    style_id, prompt, negative_prompt, seed, settings_json, created_at
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-            """, (
-                render_id,
-                job_id,
-                project_id,
-                file_url,
-                s3_output_key,
-                style_id,
-                prompt_text,
-                negative_prompt_text,
-                v_seed,
-                json.dumps(clamped_settings),
-                datetime.datetime.now(datetime.timezone.utc)
-            ))
-            
-            # Log transition event log
-            event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
-            cur.execute("""
-                INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
-                VALUES (%s, %s, 'processing', %s, '{}', %s);
-            """, (
-                event_id, 
-                job_id, 
-                f"Variation {idx + 1}/{variations} completed and uploaded successfully.", 
-                datetime.datetime.now(datetime.timezone.utc)
-            ))
+            if not is_upscale:
+                # Save render metadata row in Neon
+                render_id = f"render_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                cur.execute("""
+                    INSERT INTO renders (
+                        id, job_id, project_id, base_image_url, final_image_url, 
+                        preview_url, final_url, style_id, prompt, negative_prompt, 
+                        seed, settings_json, created_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                """, (
+                    render_id,
+                    job_id,
+                    project_id,
+                    file_url,
+                    s3_output_key,
+                    s3_output_key,
+                    None,
+                    style_id,
+                    prompt_text,
+                    negative_prompt_text,
+                    v_seed,
+                    json.dumps(clamped_settings),
+                    datetime.datetime.now(datetime.timezone.utc)
+                ))
+                
+                # Log transition event log
+                event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                cur.execute("""
+                    INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                    VALUES (%s, %s, 'processing', %s, '{}', %s);
+                """, (
+                    event_id, 
+                    job_id, 
+                    f"Variation {idx + 1}/{variations} completed and uploaded successfully.", 
+                    datetime.datetime.now(datetime.timezone.utc)
+                ))
+            else:
+                # Update existing render metadata with upscaled url
+                cur.execute("""
+                    UPDATE renders
+                    SET final_url = %s, final_image_url = %s
+                    WHERE id = %s;
+                """, (s3_output_key, s3_output_key, render_id_to_upscale))
+                
+                # Log transition event log
+                event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                cur.execute("""
+                    INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                    VALUES (%s, %s, 'processing', %s, '{}', %s);
+                """, (
+                    event_id, 
+                    job_id, 
+                    f"Render variation {render_id_to_upscale} upscale completed and uploaded successfully.", 
+                    datetime.datetime.now(datetime.timezone.utc)
+                ))
             conn.commit()
 
         # Update final job state as completed
@@ -709,10 +780,11 @@ def process_job(conn, job):
         """, (datetime.datetime.now(datetime.timezone.utc), job_id))
         
         event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+        event_msg = 'Render variations execution completed. All outputs registered.' if not is_upscale else f'Render {render_id_to_upscale} upscale completed.'
         cur.execute("""
             INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
-            VALUES (%s, %s, 'completed', 'Render variations execution completed. All outputs registered.', '{}', %s);
-        """, (event_id, job_id, datetime.datetime.now(datetime.timezone.utc)))
+            VALUES (%s, %s, 'completed', %s, '{}', %s);
+        """, (event_id, job_id, event_msg, datetime.datetime.now(datetime.timezone.utc)))
         conn.commit()
         
     except Exception as e:

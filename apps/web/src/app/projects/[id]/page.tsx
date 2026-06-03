@@ -43,7 +43,8 @@ interface Render {
   style: string;
   status: string;
   rating: number;
-  previewUrl: string;
+  previewUrl: string | null;
+  finalUrl: string | null;
   createdAt: string;
   baseDownloadUrl?: string;
   feedbackDetails?: Record<string, any>;
@@ -91,6 +92,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
 
   const [jobs, setJobs] = useState<RenderJob[]>([]);
   const [isLaunchingJob, setIsLaunchingJob] = useState(false);
+  const [isUpscalingRenderId, setIsUpscalingRenderId] = useState<string | null>(null);
   const [selectedJob, setSelectedJob] = useState<RenderJob | null>(null);
   const [jobEvents, setJobEvents] = useState<any[]>([]);
   const [isLoadingEvents, setIsLoadingEvents] = useState(false);
@@ -171,20 +173,38 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
         );
         setFilesList(resolvedFiles);
 
-        // Resolve download URLs for all renders to populate previewUrl and baseDownloadUrl, and load feedback
+        // Resolve download URLs for all renders to populate previewUrl, finalUrl, and baseDownloadUrl, and load feedback
         const resolvedRenders = await Promise.all(
           (data.renders || []).map(async (render: any) => {
-            let previewUrl = render.finalImageUrl;
+            let resolvedPreviewUrl = null;
+            let resolvedFinalUrl = null;
             let baseDownloadUrl = null;
             
-            try {
-              const urlRes = await fetch(`/api/storage/download-url?key=${encodeURIComponent(render.finalImageUrl)}`);
-              if (urlRes.ok) {
-                const urlData = await urlRes.json();
-                previewUrl = urlData.url;
+            // Resolve previewUrl (or fallback to finalImageUrl if previewUrl not in DB yet)
+            const previewKey = render.previewUrl || render.finalImageUrl;
+            if (previewKey) {
+              try {
+                const urlRes = await fetch(`/api/storage/download-url?key=${encodeURIComponent(previewKey)}`);
+                if (urlRes.ok) {
+                  const urlData = await urlRes.json();
+                  resolvedPreviewUrl = urlData.url;
+                }
+              } catch (err) {
+                console.error('Failed to get download URL for render preview:', err);
               }
-            } catch (err) {
-              console.error('Failed to get download URL for render:', err);
+            }
+
+            // Resolve finalUrl
+            if (render.finalUrl) {
+              try {
+                const urlRes = await fetch(`/api/storage/download-url?key=${encodeURIComponent(render.finalUrl)}`);
+                if (urlRes.ok) {
+                  const urlData = await urlRes.json();
+                  resolvedFinalUrl = urlData.url;
+                }
+              } catch (err) {
+                console.error('Failed to get download URL for render final:', err);
+              }
             }
 
             if (render.baseImageUrl) {
@@ -217,7 +237,8 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
 
             return {
               ...render,
-              previewUrl,
+              previewUrl: resolvedPreviewUrl,
+              finalUrl: resolvedFinalUrl,
               baseDownloadUrl,
               status,
               style: render.styleId ? render.styleId.replace('style_', '').replace(/_/g, ' ') : 'Custom Style',
@@ -386,6 +407,48 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
 
     return () => clearInterval(interval);
   }, [jobs, isDrawerOpen, selectedJob]);
+
+  const getUpscaleJobForRender = (renderId: string) => {
+    return jobs.find(job => {
+      if (['completed', 'failed', 'cancelled'].includes(job.status)) return false;
+      try {
+        const settings = JSON.parse(job.settingsJson || '{}');
+        return (settings.job_type === 'upscale_selected' || settings.jobType === 'upscale_selected') && settings.renderId === renderId;
+      } catch {
+        return false;
+      }
+    });
+  };
+
+  const handleUpscaleSelected = async (renderId: string) => {
+    if (!project) return;
+    setIsUpscalingRenderId(renderId);
+    try {
+      const res = await fetch('/api/jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId: id,
+          settingsJson: JSON.stringify({
+            job_type: 'upscale_selected',
+            renderId: renderId
+          })
+        })
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || 'Failed to queue upscale job');
+      }
+
+      await fetchProjectData();
+    } catch (err: any) {
+      console.error('[Upscale Error]:', err.message);
+      alert(err.message || 'An error occurred while queueing the upscale job.');
+    } finally {
+      setIsUpscalingRenderId(null);
+    }
+  };
 
   const openLaunchModal = () => {
     if (!project) return;
@@ -858,11 +921,16 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                             <div className="relative overflow-hidden h-full bg-slate-950">
                               {/* eslint-disable-next-line @next/next/no-img-element */}
                               <img 
-                                src={render.previewUrl} 
+                                src={render.finalUrl || render.previewUrl || ''} 
                                 alt={`Seed: ${render.seed}`} 
                                 className="object-cover w-full h-full"
                               />
                               <span className="absolute bottom-2 right-2 px-1.5 py-0.5 bg-indigo-950/80 text-indigo-400 text-[8px] font-bold rounded uppercase tracking-wider">Render Output</span>
+
+                              {/* Preview / Upscaled Badge */}
+                              <span className={`absolute top-2.5 left-2.5 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider shadow-sm border ${render.finalUrl ? 'bg-emerald-950/95 text-emerald-400 border-emerald-500/30' : 'bg-amber-950/95 text-amber-400 border-amber-500/30'}`}>
+                                {render.finalUrl ? 'Upscaled' : 'Preview'}
+                              </span>
                             </div>
                           </div>
                           <div className="absolute top-2.5 right-2.5">
@@ -881,15 +949,46 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                             <p className="text-xs text-slate-500 mt-1">Style: {render.style}</p>
                           </div>
 
-                          <div className="flex items-center gap-2 pt-2 border-t border-slate-900">
-                            <button
-                              onClick={() => handleOpenReviewDrawer(render)}
-                              className="flex-1 inline-flex items-center justify-center space-x-1.5 bg-indigo-600 hover:bg-indigo-500 text-slate-100 text-xs font-semibold py-2.5 rounded-lg transition-colors shadow-md"
-                            >
-                              <Sliders className="h-3.5 w-3.5" />
-                              <span>{render.status === 'pending' ? 'Review & Rate' : 'View Feedback'}</span>
-                            </button>
-                          </div>
+                          {(() => {
+                            const upscaleJob = getUpscaleJobForRender(render.id);
+                            return (
+                              <div className="flex items-center gap-2 pt-2 border-t border-slate-900 w-full">
+                                <button
+                                  onClick={() => handleOpenReviewDrawer(render)}
+                                  className="flex-1 inline-flex items-center justify-center space-x-1.5 bg-indigo-600 hover:bg-indigo-500 text-slate-100 text-xs font-semibold py-2.5 rounded-lg transition-colors shadow-md"
+                                >
+                                  <Sliders className="h-3.5 w-3.5" />
+                                  <span>{render.status === 'pending' ? 'Review' : 'Feedback'}</span>
+                                </button>
+
+                                {upscaleJob ? (
+                                  <button
+                                    disabled
+                                    className="flex-1 inline-flex items-center justify-center space-x-1.5 bg-slate-900 text-slate-500 text-xs font-semibold py-2.5 rounded-lg border border-slate-850 cursor-not-allowed"
+                                  >
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    <span>
+                                      {upscaleJob.status === 'queued' ? 'Queued' : `${upscaleJob.progress}%`}
+                                    </span>
+                                  </button>
+                                ) : render.finalUrl ? (
+                                  <div className="flex-1 inline-flex items-center justify-center space-x-1.5 bg-emerald-950/40 text-emerald-400 text-xs font-semibold py-2.5 rounded-lg border border-emerald-500/20">
+                                    <Check className="h-3.5 w-3.5" />
+                                    <span>Upscaled</span>
+                                  </div>
+                                ) : (
+                                  <button
+                                    disabled={isUpscalingRenderId !== null}
+                                    onClick={() => handleUpscaleSelected(render.id)}
+                                    className="flex-1 inline-flex items-center justify-center space-x-1.5 bg-indigo-950 hover:bg-indigo-900 text-indigo-400 text-xs font-semibold py-2.5 rounded-lg border border-indigo-500/20 transition-colors shadow-md disabled:opacity-50"
+                                  >
+                                    <Sparkles className="h-3.5 w-3.5" />
+                                    <span>Upscale</span>
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </div>
                       </div>
                     ))}
@@ -1283,11 +1382,13 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                     <div className="relative overflow-hidden h-full bg-slate-950">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img 
-                        src={selectedReviewRender.previewUrl} 
+                        src={selectedReviewRender.finalUrl || selectedReviewRender.previewUrl || ''} 
                         alt="Render Output" 
                         className="object-cover w-full h-full"
                       />
-                      <span className="absolute bottom-2 right-2 px-1.5 py-0.5 bg-indigo-950/80 text-indigo-400 text-[8px] font-bold rounded uppercase tracking-wider">Render Variation</span>
+                      <span className="absolute bottom-2 right-2 px-1.5 py-0.5 bg-indigo-950/80 text-indigo-400 text-[8px] font-bold rounded uppercase tracking-wider">
+                        {selectedReviewRender.finalUrl ? 'Upscaled Output' : 'Preview Output'}
+                      </span>
                     </div>
                   </div>
                 </div>
