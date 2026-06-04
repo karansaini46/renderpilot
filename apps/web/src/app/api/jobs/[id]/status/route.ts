@@ -68,6 +68,18 @@ export async function POST(
 
       // 3. Register render outputs if the job has completed successfully
       if (status === 'completed' && renderData) {
+        let cacheKey = null;
+        let styleId = null;
+        if (job.settingsJson) {
+          try {
+            const settings = JSON.parse(job.settingsJson);
+            cacheKey = settings.cacheKey || null;
+            styleId = settings.styleId || settings.stylePresetId || (settings.stylePreset ? settings.stylePreset.id : null) || null;
+          } catch (e: any) {
+            console.error('[Job Status Parse settingsJson Error]:', e.message);
+          }
+        }
+
         const renderId = `render_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
         await tx.render.create({
           data: {
@@ -75,6 +87,10 @@ export async function POST(
             jobId: id,
             projectId: job.projectId,
             finalImageUrl: renderData.finalImageUrl,
+            finalUrl: renderData.finalImageUrl || null,
+            previewUrl: renderData.previewUrl || null,
+            cacheKey: cacheKey,
+            styleId: styleId,
             prompt: renderData.prompt || 'Architectural visualization rendering',
             negativePrompt: renderData.negativePrompt || '',
             seed: renderData.seed ? BigInt(renderData.seed) : null,
