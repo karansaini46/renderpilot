@@ -40,6 +40,7 @@ export default function Sidebar({ workerStatus: initialStatus = 'offline', worke
     { name: 'Jobs Queue', href: '/jobs', icon: ListTodo },
     { name: 'Workers', href: '/workers', icon: Cpu },
     { name: 'Dataset', href: '/dataset', icon: Database },
+    { name: 'Model Registry', href: '/models', icon: Layers },
     { name: 'Settings', href: '/settings', icon: SettingsIcon },
   ];
 

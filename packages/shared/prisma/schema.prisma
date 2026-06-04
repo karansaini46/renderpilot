@@ -242,10 +242,19 @@ model LoraVersion {
   id             String   @id
   styleId        String   @map("style_id")
   versionName    String   @map("version_name")
+  version        String   @default("1.0.0")
   fileUrl        String   @map("file_url")
   datasetSize    Int?     @map("dataset_size")
   benchmarkScore Float?   @map("benchmark_score")
-  active         Boolean  @default(true)
+  geometryScore  Float?   @map("geometry_score")
+  styleScore     Float?   @map("style_score")
+  realismScore   Float?   @map("realism_score")
+  materialScore  Float?   @map("material_score")
+  overallScore   Float?   @map("overall_score")
+  passed         Boolean  @default(false)
+  status         String   @default("ready")
+  active         Boolean  @default(false)
+  notes          String?
   createdAt      DateTime @default(now()) @map("created_at")
   style          Style    @relation(fields: [styleId], references: [id], onDelete: Cascade)
 
