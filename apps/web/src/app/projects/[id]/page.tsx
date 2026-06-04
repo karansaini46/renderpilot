@@ -24,7 +24,10 @@ import {
   Unlock,
   Plus,
   Database,
-  Edit3
+  Edit3,
+  Share2,
+  Copy,
+  ExternalLink
 } from 'lucide-react';
 import { STYLE_PRESETS } from '../../../lib/style-presets';
 
@@ -93,7 +96,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'renders' | 'files' | 'materials'>('files');
+  const [activeTab, setActiveTab] = useState<'renders' | 'files' | 'materials' | 'deliveries'>('files');
 
   const [jobs, setJobs] = useState<RenderJob[]>([]);
   const [isLaunchingJob, setIsLaunchingJob] = useState(false);
@@ -134,6 +137,15 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
   const [selectedGeometryLockMode, setSelectedGeometryLockMode] = useState('accurate');
   const [forceRegenerate, setForceRegenerate] = useState(false);
   const [promptModifier, setPromptModifier] = useState('');
+
+  // Share Modal State
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+  const [shareSelectedRenders, setShareSelectedRenders] = useState<string[]>([]);
+  const [sharePassword, setSharePassword] = useState('');
+  const [shareCommentsEnabled, setShareCommentsEnabled] = useState(true);
+  const [generatedShareLink, setGeneratedShareLink] = useState('');
+  const [isGeneratingShare, setIsGeneratingShare] = useState(false);
+  const [projectDeliveries, setProjectDeliveries] = useState<any[]>([]);
 
   // Material Mapping State
   const [materialMappings, setMaterialMappings] = useState<any[]>([]);
@@ -400,10 +412,23 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
     setEditingMaterialId(null);
   };
 
+  const fetchDeliveries = async () => {
+    try {
+      const res = await fetch(`/api/projects/${id}/deliveries`);
+      if (res.ok) {
+        const data = await res.json();
+        setProjectDeliveries(data || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch project deliveries:', err);
+    }
+  };
+
   useEffect(() => {
     fetchProjectData();
     checkWorkerAvailability();
     fetchMaterials();
+    fetchDeliveries();
   }, [id]);
 
   useEffect(() => {
@@ -726,6 +751,43 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
     }
   };
 
+  const handleCreateShareLink = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (shareSelectedRenders.length === 0) {
+      alert('Please select at least one render output to share.');
+      return;
+    }
+
+    setIsGeneratingShare(true);
+    try {
+      const res = await fetch(`/api/projects/${id}/deliveries`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          password: sharePassword.trim() || undefined,
+          commentsEnabled: shareCommentsEnabled,
+          renderIds: shareSelectedRenders
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const origin = window.location.origin;
+        const link = `${origin}/deliveries/${data.token}`;
+        setGeneratedShareLink(link);
+        await fetchDeliveries();
+      } else {
+        const err = await res.json();
+        alert(err.error || 'Failed to create sharing link.');
+      }
+    } catch (err) {
+      console.error('Failed to create delivery link:', err);
+      alert('An error occurred while creating the sharing link.');
+    } finally {
+      setIsGeneratingShare(false);
+    }
+  };
+
   const handleDeleteFile = async (fileId: string, fileKey: string) => {
     try {
       // Direct call to local/s3 delete (can mock this or make API later)
@@ -812,6 +874,12 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                 className={`px-4 py-4 text-xs font-semibold uppercase tracking-wider border-b-2 transition-all ${activeTab === 'materials' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
               >
                 Material Board ({materialMappings.length})
+              </button>
+              <button
+                onClick={() => setActiveTab('deliveries')}
+                className={`px-4 py-4 text-xs font-semibold uppercase tracking-wider border-b-2 transition-all ${activeTab === 'deliveries' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
+              >
+                Client Shares ({projectDeliveries.length})
               </button>
             </div>
 
@@ -1021,7 +1089,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                     ))}
                   </div>
                 )
-              ) : (
+              ) : activeTab === 'materials' ? (
                 /* Material board tab */
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                   {/* Left Column: Form Editor */}
@@ -1257,6 +1325,111 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                       </div>
                     )}
                   </div>
+                </div>
+              ) : (
+                /* Client Shares tab content */
+                <div className="space-y-6">
+                  <div className="flex items-col sm:flex-row sm:items-center justify-between gap-4">
+                    <h3 className="text-xs font-bold text-slate-455 uppercase tracking-wider">
+                      Client Delivery Portals ({projectDeliveries.length})
+                    </h3>
+                    <button
+                      onClick={() => {
+                        const finalRenderIds = (project.renders || []).map(r => r.id);
+                        setShareSelectedRenders(finalRenderIds);
+                        setSharePassword('');
+                        setShareCommentsEnabled(true);
+                        setGeneratedShareLink('');
+                        setIsShareModalOpen(true);
+                      }}
+                      className="inline-flex items-center space-x-1.5 bg-indigo-600 hover:bg-indigo-500 text-slate-100 text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors shadow-md w-fit"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      <span>Create Client Share Link</span>
+                    </button>
+                  </div>
+
+                  {projectDeliveries.length === 0 ? (
+                    <div className="text-center py-12 border border-dashed border-slate-900 rounded-xl bg-slate-950/20">
+                      <Share2 className="h-8 w-8 text-slate-700 mx-auto mb-2" />
+                      <p className="text-slate-550 text-xs italic">No client sharing portals created yet.</p>
+                      <p className="text-[10px] text-slate-650 mt-1 max-w-xs mx-auto text-center leading-normal">
+                        Generate password-protected presentation spaces for your clients to review outputs and leave comments.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {projectDeliveries.map((delivery) => {
+                        let renderIdsCount = 0;
+                        try {
+                          renderIdsCount = JSON.parse(delivery.rendersJson || '[]').length;
+                        } catch {
+                          renderIdsCount = 0;
+                        }
+                        
+                        const shareUrl = `${window.location.origin}/deliveries/${delivery.token}`;
+
+                        return (
+                          <div key={delivery.id} className="bg-slate-950 border border-slate-900 rounded-xl p-5 flex flex-col justify-between space-y-4">
+                            <div>
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <h4 className="text-xs font-bold text-slate-200 truncate">Delivery Space</h4>
+                                  <p className="text-[9px] text-slate-500 mt-0.5">Created {new Date(delivery.createdAt).toLocaleDateString()}</p>
+                                </div>
+                                <span className={`px-2 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider border ${
+                                  delivery.password 
+                                    ? 'bg-amber-500/10 text-amber-400 border-amber-500/25' 
+                                    : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25'
+                                }`}>
+                                  {delivery.password ? 'Password' : 'Open'}
+                                </span>
+                              </div>
+
+                              <div className="mt-3.5 space-y-2 text-[11px] text-slate-450">
+                                <div className="flex justify-between">
+                                  <span className="text-slate-500">Renders Included:</span>
+                                  <span className="font-semibold text-slate-300">{renderIdsCount} variations</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-slate-550">Comments Enabled:</span>
+                                  <span className="font-semibold text-slate-350">{delivery.commentsEnabled ? 'Yes' : 'No'}</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2 pt-3 border-t border-slate-900/65 w-full">
+                              <input
+                                type="text"
+                                readOnly
+                                value={shareUrl}
+                                className="flex-1 bg-slate-900 border border-slate-850 rounded px-2.5 py-1 text-[10px] text-slate-450 focus:outline-none select-all font-mono"
+                              />
+                              <button
+                                onClick={() => {
+                                  navigator.clipboard.writeText(shareUrl);
+                                  alert('Link copied to clipboard!');
+                                }}
+                                className="p-1.5 bg-slate-900 hover:bg-slate-850 text-slate-450 hover:text-slate-200 rounded border border-slate-850 transition-colors shrink-0"
+                                title="Copy sharing link"
+                              >
+                                <Copy className="h-3.5 w-3.5" />
+                              </button>
+                              <a
+                                href={shareUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="p-1.5 bg-indigo-950/80 hover:bg-indigo-900 text-indigo-400 hover:text-indigo-300 rounded border border-indigo-500/20 transition-colors shrink-0"
+                                title="View delivery page"
+                              >
+                                <ExternalLink className="h-3.5 w-3.5" />
+                              </a>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -2115,6 +2288,155 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                 )}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 5. Client Share Link Creation Modal */}
+      {isShareModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+          <div className="relative w-full max-w-xl bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xl animate-in fade-in zoom-in duration-200 text-slate-100">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4.5 border-b border-slate-800 bg-slate-950/40">
+              <div className="flex items-center space-x-2 text-slate-200">
+                <Share2 className="h-5 w-5 text-indigo-400" />
+                <span className="font-bold text-base font-semibold">Generate Client Share Link</span>
+              </div>
+              <button 
+                onClick={() => setIsShareModalOpen(false)}
+                className="text-slate-500 hover:text-slate-300 transition-colors"
+                disabled={isGeneratingShare}
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateShareLink} className="p-6 space-y-5">
+              {/* Select Renders list with checkboxes */}
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest">
+                  1. Select Renders to Share
+                </label>
+                <div className="max-h-40 overflow-y-auto border border-slate-850 rounded-lg p-3 bg-slate-950/40 space-y-2">
+                  {(project.renders || []).length === 0 ? (
+                    <p className="text-slate-500 text-xs italic">No renders outputs available in this project.</p>
+                  ) : (
+                    (project.renders || []).map((render) => {
+                      const isChecked = shareSelectedRenders.includes(render.id);
+                      return (
+                        <label key={render.id} className="flex items-center space-x-3.5 p-2 rounded hover:bg-slate-900/50 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => {
+                              if (isChecked) {
+                                setShareSelectedRenders(shareSelectedRenders.filter(id => id !== render.id));
+                              } else {
+                                setShareSelectedRenders([...shareSelectedRenders, render.id]);
+                              }
+                            }}
+                            className="rounded border-slate-800 bg-slate-900 text-indigo-650 focus:ring-0 h-4 w-4 cursor-pointer"
+                          />
+                          <div className="flex-1 min-w-0 flex items-center justify-between text-xs gap-3">
+                            <span className="font-semibold text-slate-300 truncate">Seed: {render.seed}</span>
+                            <span className="text-[10px] text-slate-500 uppercase font-mono">{render.style}</span>
+                          </div>
+                        </label>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {/* Password Protection */}
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                  2. Password Protection (Optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. AcmeClient2026 (Leave blank for open access)"
+                  value={sharePassword}
+                  onChange={(e) => setSharePassword(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-850 text-slate-200 text-xs rounded-lg px-3 py-2.5 focus:border-indigo-500 focus:outline-none placeholder-slate-650 font-medium"
+                />
+              </div>
+
+              {/* Comments Enabled Switch */}
+              <div className="flex items-center justify-between bg-slate-950/30 border border-slate-850 rounded-xl p-4">
+                <div>
+                  <label className="text-xs font-bold text-slate-350 block">Enable Client Commenting</label>
+                  <p className="text-[10px] text-slate-550 mt-0.5">Allow the client to leave comments directly on render variations.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShareCommentsEnabled(!shareCommentsEnabled)}
+                  className={`relative w-11 h-6 rounded-full border transition-all duration-200 shrink-0 ml-4 ${
+                    shareCommentsEnabled
+                      ? 'bg-indigo-650 border-indigo-500'
+                      : 'bg-slate-800 border-slate-700'
+                  }`}
+                >
+                  <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full transition-transform duration-200 ${
+                    shareCommentsEnabled
+                      ? 'translate-x-5 bg-white'
+                      : 'translate-x-0 bg-slate-500'
+                  }`} />
+                </button>
+              </div>
+
+              {/* Generated link feedback */}
+              {generatedShareLink && (
+                <div className="bg-emerald-950/30 border border-emerald-500/20 rounded-xl p-4 space-y-2">
+                  <span className="block text-[10.5px] font-bold text-emerald-400 uppercase tracking-wider">Sharing Link Generated successfully!</span>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      readOnly
+                      value={generatedShareLink}
+                      className="flex-1 bg-slate-950 border border-slate-850 rounded px-2.5 py-2 text-[10.5px] text-slate-300 font-mono focus:outline-none select-all"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(generatedShareLink);
+                        alert('Link copied to clipboard!');
+                      }}
+                      className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-550 text-white font-bold text-xs rounded transition-colors shrink-0 uppercase tracking-wider"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Actions Footer */}
+              <div className="flex items-center justify-end space-x-3 pt-4 border-t border-slate-850">
+                <button
+                  type="button"
+                  onClick={() => setIsShareModalOpen(false)}
+                  className="px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-slate-400 hover:text-slate-200 transition-colors"
+                >
+                  Close
+                </button>
+                {!generatedShareLink && (
+                  <button
+                    type="submit"
+                    disabled={isGeneratingShare || shareSelectedRenders.length === 0}
+                    className="inline-flex items-center space-x-2 bg-indigo-650 hover:bg-indigo-600 text-white font-bold text-xs px-5 py-2.5 rounded-lg shadow-lg hover:shadow-indigo-500/10 transition-colors uppercase tracking-wider disabled:opacity-50"
+                  >
+                    {isGeneratingShare ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        <span>Generating...</span>
+                      </>
+                    ) : (
+                      <span>Generate Link</span>
+                    )}
+                  </button>
+                )}
+              </div>
+            </form>
           </div>
         </div>
       )}
