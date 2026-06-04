@@ -497,11 +497,25 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
       s => s.id === project.stylePreference || s.name.toLowerCase() === (project.stylePreference || '').toLowerCase()
     );
     
-    setSelectedStylePreset(matchingPreset?.id || 'style_mod_lux_ext');
-    setSelectedSceneType(project.sceneType || 'Exterior');
+    const activeSceneType = project.sceneType || 'Exterior';
+    let stylePresetId = matchingPreset?.id || 'style_mod_lux_ext';
+    let geometryMode = matchingPreset?.defaultGeometryLockMode || 'accurate';
+
+    // Verify compatibility of current preset with the active sceneType
+    const stylePreset = STYLE_PRESETS.find(s => s.id === stylePresetId);
+    if (stylePreset && stylePreset.allowedSceneTypes && !stylePreset.allowedSceneTypes.includes(activeSceneType)) {
+      const fallbackPreset = STYLE_PRESETS.find(s => !s.allowedSceneTypes || s.allowedSceneTypes.includes(activeSceneType));
+      if (fallbackPreset) {
+        stylePresetId = fallbackPreset.id;
+        geometryMode = fallbackPreset.defaultGeometryLockMode;
+      }
+    }
+
+    setSelectedStylePreset(stylePresetId);
+    setSelectedSceneType(activeSceneType);
     setSelectedProjectType(project.projectType || 'Residential');
     setSelectedMaterials([]);
-    setSelectedGeometryLockMode(matchingPreset?.defaultGeometryLockMode || 'accurate');
+    setSelectedGeometryLockMode(geometryMode);
     setIsLaunchModalOpen(true);
   };
 
@@ -1997,7 +2011,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                   1. Select Visual Preset Style
                 </label>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {STYLE_PRESETS.map((style) => {
+                  {STYLE_PRESETS.filter(style => !style.allowedSceneTypes || style.allowedSceneTypes.includes(selectedSceneType)).map((style) => {
                     const isSelected = selectedStylePreset === style.id;
                     return (
                       <div
@@ -2052,7 +2066,20 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                   </label>
                   <select
                     value={selectedSceneType}
-                    onChange={(e) => setSelectedSceneType(e.target.value)}
+                    onChange={(e) => {
+                      const newSceneType = e.target.value;
+                      setSelectedSceneType(newSceneType);
+                      
+                      // Auto-fallback if currently selected style preset is not compatible with new sceneType
+                      const currentPreset = STYLE_PRESETS.find(s => s.id === selectedStylePreset);
+                      if (currentPreset && currentPreset.allowedSceneTypes && !currentPreset.allowedSceneTypes.includes(newSceneType)) {
+                        const fallbackPreset = STYLE_PRESETS.find(s => !s.allowedSceneTypes || s.allowedSceneTypes.includes(newSceneType));
+                        if (fallbackPreset) {
+                          setSelectedStylePreset(fallbackPreset.id);
+                          setSelectedGeometryLockMode(fallbackPreset.defaultGeometryLockMode);
+                        }
+                      }
+                    }}
                     className="w-full bg-slate-950 border border-slate-850 text-xs text-slate-205 p-2.5 rounded-lg focus:outline-none focus:border-indigo-500"
                   >
                     <option value="Exterior">Exterior Perspective</option>

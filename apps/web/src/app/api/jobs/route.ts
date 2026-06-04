@@ -239,7 +239,15 @@ export async function POST(request: Request) {
     const materialChoices = userSettings.materialChoices || [];
 
     // Find style preset matching requestedStyleId
-    const stylePreset = STYLE_PRESETS.find(s => s.id === requestedStyleId || s.name === requestedStyleId) || STYLE_PRESETS[0];
+    let stylePreset = STYLE_PRESETS.find(s => s.id === requestedStyleId || s.name === requestedStyleId) || STYLE_PRESETS[0];
+
+    // Guard: Verify compatibility of resolved style preset with the active sceneType
+    if (stylePreset.allowedSceneTypes && !stylePreset.allowedSceneTypes.includes(sceneType)) {
+      const fallbackPreset = STYLE_PRESETS.find(s => !s.allowedSceneTypes || s.allowedSceneTypes.includes(sceneType));
+      if (fallbackPreset) {
+        stylePreset = fallbackPreset;
+      }
+    }
 
     // Compile Preset Defaults
     const presetDefaults = {
