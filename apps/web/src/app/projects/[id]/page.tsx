@@ -1301,7 +1301,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                              <div className="bg-slate-900/40 border border-slate-900/60 rounded-lg p-2.5">
                                <span className="block text-[8px] text-slate-550 font-bold uppercase tracking-wider mb-0.5">Finish / Details</span>
                                <span className="text-xs font-medium text-slate-300 italic">&ldquo;{mapping.selectedMaterial}&rdquo;</span>
-                               {mapping.correctionSource === 'heuristic' && (
+                               {(mapping.correctionSource === 'heuristic' || mapping.correctionSource === 'gemini') && (
                                  <div className="mt-2 pt-2 border-t border-slate-900/40 flex flex-col gap-1">
                                    <div className="flex items-center space-x-1.5">
                                      <span className="px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[8px] font-bold rounded uppercase tracking-wider">

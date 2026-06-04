@@ -8,6 +8,7 @@ export const dynamic = 'force-dynamic';
 import { env } from '../../../config/env';
 import { analyzeProjectImage } from '../../../lib/prompt-brain/gemini-provider';
 import { composePrompt } from '../../../lib/prompt-brain/prompt-composer';
+import { processAutoMaterialMappings } from '../../../lib/prompt-brain/material-mapper';
 import { PromptBrainSchema, SCENE_TYPES } from '../../../lib/prompt-brain/types';
 
 function createManualAnalysis(
@@ -365,7 +366,7 @@ export async function POST(request: Request) {
     }
 
     // Merge UI material choices and database locked material choices
-    const combinedMaterials = Array.from(new Set([
+    let combinedMaterials = Array.from(new Set([
       ...materialChoices,
       ...dbLockedMaterials
     ]));
@@ -408,6 +409,13 @@ export async function POST(request: Request) {
           if (geminiRes.success && geminiRes.analysis && geminiRes.analysis.confidence >= (env.PROMPT_BRAIN_MIN_CONFIDENCE || 0.75)) {
             analysisResult = geminiRes.analysis;
             finalProvider = 'gemini';
+
+            // Run helper to process material mappings
+            try {
+              await processAutoMaterialMappings(project.id, analysisResult);
+            } catch (mapperErr: any) {
+              console.error('[PromptBrain Auto Material Mapper Error]:', mapperErr.message);
+            }
           } else {
             console.warn(`[PromptBrain Gemini Fallback]: Success=${geminiRes.success}, Confidence=${geminiRes.analysis?.confidence ?? 'N/A'}`);
             finalProvider = 'manual';
@@ -450,6 +458,57 @@ export async function POST(request: Request) {
         });
       } catch (dbSaveErr: any) {
         console.error('[PromptBrain Save Error]:', dbSaveErr.message);
+      }
+    }
+
+    // Merge latest database material mappings to analysisResult and reload combinedMaterials
+    if (analysisResult) {
+      try {
+        const dbMappings = await prisma.materialMapping.findMany({
+          where: { projectId: project.id }
+        });
+
+        // Convert database records to PromptBrain suggestion format
+        const dbMappedSuggestions = dbMappings.map((m: any) => ({
+          objectName: m.objectName,
+          category: m.detectedClass as any,
+          suggestedMaterial: m.selectedMaterial,
+          confidence: m.locked ? 1.0 : m.confidence
+        }));
+
+        // Merge: start with DB mappings, then add suggestions from analysis for categories not present in DB
+        const mergedMappings = [...dbMappedSuggestions];
+        const dbCategories = new Set(dbMappedSuggestions.map(m => m.category.toLowerCase()));
+
+        if (analysisResult.material_mappings) {
+          for (const suggestion of analysisResult.material_mappings) {
+            if (!dbCategories.has(suggestion.category.toLowerCase())) {
+              mergedMappings.push(suggestion);
+            }
+          }
+        }
+
+        analysisResult.material_mappings = mergedMappings;
+
+        // Reload locked materials list for finalSettings.materialChoices
+        const reloadedLockedMaterials = dbMappings
+          .filter((m: any) => m.locked)
+          .map((m: any) => {
+            const finish = (m.selectedMaterial || '').trim();
+            const zone = (m.detectedClass || '').trim();
+            if (finish && zone) {
+              return `${finish} ${zone}`;
+            }
+            return finish || zone;
+          })
+          .filter(Boolean);
+
+        combinedMaterials = Array.from(new Set([
+          ...materialChoices,
+          ...reloadedLockedMaterials
+        ]));
+      } catch (mergeErr: any) {
+        console.error('[PromptBrain Database Material Merge Error]:', mergeErr.message);
       }
     }
 
