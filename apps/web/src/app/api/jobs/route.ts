@@ -513,18 +513,17 @@ export async function POST(request: Request) {
     }
 
     // Compose Prompt using Safe prompt composer
-    let combinedModifier = userSettings.promptModifier || '';
-    if (memoryApplied && finalSettings.prompt && finalSettings.prompt !== stylePreset.promptTemplate) {
-      combinedModifier = combinedModifier 
-        ? `${combinedModifier}, ${finalSettings.prompt}` 
-        : finalSettings.prompt;
-    }
+    const userPromptModifier = userSettings.promptModifier || '';
+    const memoryPromptValue = (memoryApplied && finalSettings.prompt && finalSettings.prompt !== stylePreset.promptTemplate)
+      ? finalSettings.prompt
+      : undefined;
 
     const composerResult = composePrompt({
       analysis: analysisResult!,
       stylePreset,
       renderMode: userSettings.geometryLockMode ? undefined : finalSettings.geometryLockMode as any,
-      promptModifier: combinedModifier
+      promptModifier: userPromptModifier,
+      memoryPrompt: memoryPromptValue
     });
 
     // Merge composed attributes back to settings
@@ -533,6 +532,7 @@ export async function POST(request: Request) {
     finalSettings.promptBrainAnalysis = analysisResult;
     finalSettings.prompt = composerResult.positivePrompt;
     finalSettings.negativePrompt = composerResult.negativePrompt;
+    finalSettings.promptSafetyReport = composerResult.promptSafetyReport;
     
     // Explicit user selections / fallbacks
     finalSettings.projectType = projectType;

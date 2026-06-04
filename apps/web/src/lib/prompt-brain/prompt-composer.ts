@@ -31,6 +31,7 @@ export interface PromptComposerInput {
   renderMode?: RenderMode;
   promptModifier?: string;
   manualCorrections?: Record<string, any>;
+  memoryPrompt?: string;
 }
 
 export interface PromptComposerOutput {
@@ -39,6 +40,12 @@ export interface PromptComposerOutput {
   renderMode: RenderMode;
   denoise: number;
   geometryLockMode: GeometryLockMode;
+  promptSafetyReport?: {
+    removedTerms: {
+      term: string;
+      source: 'preset' | 'modifier' | 'memory' | 'gemini_draft' | 'unknown';
+    }[];
+  };
   promptDebugParts: {
     sceneFacts: string;
     preserveConstraints: string;
@@ -48,37 +55,131 @@ export interface PromptComposerOutput {
     styleTerms: string;
     geminiDraftSanitized: string;
     userModifier: string;
+    memoryPrompt: string;
   };
 }
 
-function sanitizePromptString(prompt: string, blockedTerms: string[]): string {
-  if (!prompt || prompt.trim() === '') return '';
+function isTermVisibleInAnalysis(term: string, analysis: PromptBrainSchema): boolean {
+  const termLower = term.toLowerCase().trim();
   
-  return prompt
-    .split(',')
-    .map(term => term.trim())
-    .filter(term => {
-      if (!term) return false;
-      const lower = term.toLowerCase();
-      // Keep term if none of the blocked words is present in the term
-      return !blockedTerms.some(blocked => lower.includes(blocked.toLowerCase()));
-    })
-    .join(', ');
+  if (analysis.major_objects?.some(o => o.name.toLowerCase().includes(termLower) || o.category.toLowerCase().includes(termLower))) {
+    return true;
+  }
+  
+  if (analysis.object_priority?.some(op => op.objectName.toLowerCase().includes(termLower))) {
+    return true;
+  }
+  
+  if (analysis.materials?.some(m => m.toLowerCase().includes(termLower))) {
+    return true;
+  }
+
+  if (analysis.material_mappings?.some(m => m.objectName.toLowerCase().includes(termLower) || m.suggestedMaterial.toLowerCase().includes(termLower))) {
+    return true;
+  }
+
+  if (analysis.user_summary?.toLowerCase().includes(termLower)) {
+    return true;
+  }
+
+  if (analysis.camera_view?.description?.toLowerCase().includes(termLower)) {
+    return true;
+  }
+
+  return false;
 }
 
 export function composePrompt(input: PromptComposerInput): PromptComposerOutput {
-  const { analysis, stylePreset, renderMode, promptModifier } = input;
+  const { analysis, stylePreset, renderMode, promptModifier, memoryPrompt } = input;
 
   const sceneType = analysis.scene_type || 'Exterior';
+  const geometryLockMode = renderMode || analysis.suggested_geometry_lock || stylePreset.defaultGeometryLockMode || 'balanced';
+  const isCreative = geometryLockMode.toLowerCase() === 'creative';
 
-  // 1. Gather blocked terms based on scene type and preset configuration
-  const presetBlocked = stylePreset.blockedTerms || [];
-  const defaultBlocked = sceneType.toLowerCase() === 'interior'
-    ? ['pool', 'garden', 'driveway', 'villa', 'facade', 'exterior', 'landscape', 'clouds', 'starry night']
-    : ['sofa', 'fireplace', 'bed', 'living room', 'bedroom', 'bathroom', 'kitchen', 'interior'];
+  // Determine if it is a bedroom job
+  const isBedroom = analysis.room_type_protection?.roomType?.toLowerCase() === 'bedroom' ||
+                    analysis.user_summary?.toLowerCase().includes('bedroom') ||
+                    analysis.positive_prompt_draft?.toLowerCase().includes('bedroom') ||
+                    promptModifier?.toLowerCase().includes('bedroom') ||
+                    memoryPrompt?.toLowerCase().includes('bedroom');
 
-  // Combined unique set of blocked terms
-  const blockedTerms = Array.from(new Set([...presetBlocked, ...defaultBlocked]));
+  // Gather scene-aware blocked terms
+  const activeBlockedTerms: string[] = [];
+
+  // 1. Bedroom faithful/balanced jobs
+  if (isBedroom && !isCreative) {
+    const bedroomCandidates = ['living room', 'sofa', 'fireplace', 'exterior', 'facade', 'garden windows', 'pool', 'villa', 'driveway'];
+    for (const term of bedroomCandidates) {
+      if (!isTermVisibleInAnalysis(term, analysis)) {
+        activeBlockedTerms.push(term);
+      }
+    }
+  }
+
+  // 2. Interior jobs
+  if (sceneType === 'Interior' && !isCreative) {
+    const interiorCandidates = ['exterior', 'facade', 'garden', 'pool', 'villa', 'driveway', 'landscape', 'clouds', 'starry night', 'sky', 'lawn', 'patio', 'deck', 'street'];
+    for (const term of interiorCandidates) {
+      if (!isTermVisibleInAnalysis(term, analysis)) {
+        activeBlockedTerms.push(term);
+      }
+    }
+  }
+
+  // 3. Exterior jobs
+  if (sceneType === 'Exterior') {
+    const exteriorCandidates = ['bed', 'bedroom', 'living room', 'sofa', 'fireplace', 'kitchen', 'bathroom', 'interior', 'indoor', 'dining room', 'couch'];
+    for (const term of exteriorCandidates) {
+      if (!isTermVisibleInAnalysis(term, analysis)) {
+        activeBlockedTerms.push(term);
+      }
+    }
+  }
+
+  // 4. Style preset specific blocked terms
+  if (stylePreset.blockedTerms) {
+    for (const term of stylePreset.blockedTerms) {
+      activeBlockedTerms.push(term);
+    }
+  }
+
+  const finalBlockedTerms = Array.from(new Set(activeBlockedTerms));
+
+  const removedTerms: {
+    term: string;
+    source: 'preset' | 'modifier' | 'memory' | 'gemini_draft' | 'unknown';
+  }[] = [];
+
+  // Helper to sanitize and report removed terms
+  const sanitizeAndReport = (
+    prompt: string,
+    source: 'preset' | 'modifier' | 'memory' | 'gemini_draft' | 'unknown'
+  ): string => {
+    if (!prompt || prompt.trim() === '') return '';
+    
+    return prompt
+      .split(',')
+      .map(term => term.trim())
+      .filter(term => {
+        if (!term) return false;
+        const lower = term.toLowerCase();
+        
+        // Find if this term contains any of the blocked words
+        const matched = finalBlockedTerms.find(blocked => 
+          lower.includes(blocked.toLowerCase())
+        );
+        
+        if (matched) {
+          removedTerms.push({
+            term: term,
+            source: source
+          });
+          return false;
+        }
+        return true;
+      })
+      .join(', ');
+  };
 
   // 2. Rule 1: Source scene facts first
   const sceneFactsRaw = [
@@ -89,14 +190,14 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
       : ''
   ].filter(Boolean).join(', ');
 
-  const sceneFacts = sanitizePromptString(sceneFactsRaw, blockedTerms);
+  const sceneFacts = sanitizeAndReport(sceneFactsRaw, 'unknown');
 
   // 3. Rule 2: Preserve constraints must be explicit
   const preserveConstraintsRaw = analysis.preserve_constraints && analysis.preserve_constraints.length > 0
     ? `preserve structural constraints: ${analysis.preserve_constraints.join(', ')}`
     : '';
 
-  const preserveConstraints = sanitizePromptString(preserveConstraintsRaw, blockedTerms);
+  const preserveConstraints = sanitizeAndReport(preserveConstraintsRaw, 'unknown');
 
   // 4. Rule 3: Critical objects from object_priority must be included
   const priorityObjectsList = analysis.object_priority
@@ -109,7 +210,7 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
     ? `critical elements: ${priorityObjectsList.join(', ')}`
     : '';
 
-  const criticalObjects = sanitizePromptString(criticalObjectsRaw, blockedTerms);
+  const criticalObjects = sanitizeAndReport(criticalObjectsRaw, 'unknown');
 
   // 5. Rule 4: Materials, textures, and surface behavior (above confidence threshold)
   const minConfidence = env.PROMPT_BRAIN_MIN_CONFIDENCE || 0.75;
@@ -128,7 +229,7 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
     : '';
 
   const materialsAndSurfacesRaw = [materialsText, surfaceText].filter(Boolean).join(', ');
-  const materialsAndSurfaces = sanitizePromptString(materialsAndSurfacesRaw, blockedTerms);
+  const materialsAndSurfaces = sanitizeAndReport(materialsAndSurfacesRaw, 'unknown');
 
   // 6. Rule 5 & 6: Lighting (interior vs exterior checks)
   let lightingRaw = '';
@@ -156,24 +257,25 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
 
   const reflectionsRaw = reflectionParts.join(', ');
   const lightingAndReflectionsRaw = [lightingRaw, reflectionsRaw].filter(Boolean).join(', ');
-  const lightingAndReflections = sanitizePromptString(lightingAndReflectionsRaw, blockedTerms);
+  const lightingAndReflections = sanitizeAndReport(lightingAndReflectionsRaw, 'unknown');
 
   // 8. Rule 8: Style preset safe style terms
   const styleTermsRaw = stylePreset.safeStyleTerms && stylePreset.safeStyleTerms.length > 0
     ? stylePreset.safeStyleTerms.join(', ')
     : stylePreset.promptTemplate;
 
-  const styleTerms = sanitizePromptString(styleTermsRaw, blockedTerms);
+  const styleTerms = sanitizeAndReport(styleTermsRaw, 'preset');
 
   // 9. Secondary input: Sanitized Gemini positive_prompt_draft
-  const geminiDraftSanitized = analysis.positive_prompt_draft
-    ? sanitizePromptString(analysis.positive_prompt_draft, blockedTerms)
-    : '';
+  const geminiDraftSanitized = sanitizeAndReport(analysis.positive_prompt_draft || '', 'gemini_draft');
 
   // 10. Optional User modifier
-  const userModifier = promptModifier ? sanitizePromptString(promptModifier, blockedTerms) : '';
+  const userModifier = sanitizeAndReport(promptModifier || '', 'modifier');
 
-  // 11. Compose positive prompt (maintaining strict facts-first ordering)
+  // 11. Memory prompt
+  const memoryPromptSanitized = sanitizeAndReport(memoryPrompt || '', 'memory');
+
+  // 12. Compose positive prompt (maintaining strict facts-first ordering)
   const positivePrompt = [
     sceneFacts,
     preserveConstraints,
@@ -182,13 +284,14 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
     lightingAndReflections,
     styleTerms,
     geminiDraftSanitized,
+    memoryPromptSanitized,
     userModifier
   ]
     .map(p => p.trim())
     .filter(Boolean)
     .join(', ');
 
-  // 12. Rule 10: Compile Negative prompt
+  // 13. Rule 10: Compile Negative prompt
   const defaultNegativeTerms = [
     'room conversion', 'change of room function', 'bedroom to living room',
     'object replacement', 'substitute furniture', 'fake reflections',
@@ -202,27 +305,30 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
   const negativePrompt = [
     presetNegative,
     forbiddenChanges.join(', '),
-    blockedTerms.join(', '),
+    finalBlockedTerms.join(', '),
     defaultNegativeTerms.join(', ')
   ]
     .map(p => p.trim())
     .filter(Boolean)
     .join(', ');
 
-  // 13. Determine fallback settings
+  // 14. Determine fallback settings
   const finalRenderMode = renderMode || analysis.suggested_render_mode || 'img2img';
   const denoise = typeof analysis.suggested_denoise === 'number'
     ? analysis.suggested_denoise
     : (stylePreset.defaultSettings?.denoise ?? 0.65);
 
-  const geometryLockMode = analysis.suggested_geometry_lock || stylePreset.defaultGeometryLockMode || 'balanced';
+  const finalGeometryLockMode = finalRenderMode === 'base_render_model' ? 'balanced' : (geometryLockMode as GeometryLockMode);
 
   return {
     positivePrompt,
     negativePrompt,
     renderMode: finalRenderMode,
     denoise,
-    geometryLockMode,
+    geometryLockMode: finalGeometryLockMode,
+    promptSafetyReport: {
+      removedTerms: removedTerms
+    },
     promptDebugParts: {
       sceneFacts,
       preserveConstraints,
@@ -231,7 +337,8 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
       lightingAndReflections,
       styleTerms,
       geminiDraftSanitized,
-      userModifier
+      userModifier,
+      memoryPrompt: memoryPromptSanitized
     }
   };
 }
