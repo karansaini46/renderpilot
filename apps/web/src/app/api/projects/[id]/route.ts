@@ -32,7 +32,31 @@ export async function GET(
       return NextResponse.json({ error: 'Project not found' }, { status: 404 });
     }
 
-    return NextResponse.json(project, { status: 200 });
+    // Load revision notes associated with this project OR with the project's clientName
+    const clientName = project.clientName;
+    const revisionNotes = await prisma.revisionNote.findMany({
+      where: {
+        OR: [
+          { projectId: id },
+          clientName && clientName.trim() !== '' ? { clientName } : undefined
+        ].filter(Boolean) as any
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    const responsePayload = {
+      ...project,
+      revisionNotes
+    };
+
+    const jsonString = JSON.stringify(responsePayload, (key, val) => 
+      typeof val === 'bigint' ? val.toString() : val
+    );
+
+    return new Response(jsonString, {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
 
   } catch (error: any) {
     console.error('[Project ID GET API Error]:', error.message);

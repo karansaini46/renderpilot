@@ -27,7 +27,7 @@ export async function POST(
       );
     }
 
-    const { approved, rating, scores, action, rejectionReasons, notes } = body;
+    const { approved, rating, scores, action, rejectionReasons, notes, clientName, reason, requestedChange } = body;
 
     if (approved === undefined) {
       return NextResponse.json(
@@ -91,6 +91,39 @@ export async function POST(
       } catch (memoryErr: any) {
         // Memory update is non-blocking — log but don't fail the request
         console.error('[Preference Memory Update Error]:', memoryErr.message);
+      }
+    }
+
+    // 4b. When rejected or edited, save revision notes
+    if (!approved || (action && action !== 'none') || requestedChange || (rejectionReasons && rejectionReasons.length > 0)) {
+      try {
+        const computedReason = reason || (rejectionReasons || []).join(', ') || notes || 'Revision requested';
+        const computedChange = requestedChange || (action && action !== 'none' ? action : '') || 'Modify output details';
+        const finalClientName = clientName || null;
+
+        // If client name is provided, update the project's clientName
+        if (finalClientName && render.projectId) {
+          await prisma.project.update({
+            where: { id: render.projectId },
+            data: { clientName: finalClientName }
+          });
+        }
+
+        const styleName = render.styleId || '';
+
+        await prisma.revisionNote.create({
+          data: {
+            id: `rev_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+            projectId: render.projectId,
+            clientName: finalClientName,
+            reason: computedReason,
+            requestedChange: computedChange,
+            style: styleName,
+            settingsJson: render.settingsJson || '{}'
+          }
+        });
+      } catch (revErr: any) {
+        console.error('[Revision Note Creation Error]:', revErr.message);
       }
     }
 

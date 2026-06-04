@@ -40,7 +40,7 @@ export async function POST(
       return NextResponse.json({ error: 'Render job not found' }, { status: 404 });
     }
 
-    const updatedJob = await prisma.$transaction(async (tx) => {
+    const updatedJob = await prisma.$transaction(async (tx: any) => {
       // 1. Update status parameters on the job row
       const updated = await tx.renderJob.update({
         where: { id },

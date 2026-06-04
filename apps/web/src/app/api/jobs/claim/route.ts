@@ -30,7 +30,7 @@ async function recoverStaleJobs() {
 
       if (retryCount < maxRetries) {
         const newRetry = retryCount + 1;
-        await prisma.$transaction(async (tx) => {
+        await prisma.$transaction(async (tx: any) => {
           await tx.renderJob.update({
             where: { id: job.id },
             data: {
@@ -53,7 +53,7 @@ async function recoverStaleJobs() {
         });
         console.log(`[Stale Job Recovery]: Rescheduled job ${job.id} (Retry ${newRetry}/${maxRetries})`);
       } else {
-        await prisma.$transaction(async (tx) => {
+        await prisma.$transaction(async (tx: any) => {
           await tx.renderJob.update({
             where: { id: job.id },
             data: {
@@ -107,7 +107,7 @@ export async function POST(request: Request) {
     }
 
     // Atomic transaction using PostgreSQL FOR UPDATE SKIP LOCKED
-    const claimedJob = await prisma.$transaction(async (tx) => {
+    const claimedJob = await prisma.$transaction(async (tx: any) => {
       // Find the oldest queued job and lock its row, skipping already locked ones
       const jobs = await tx.$queryRaw<any[]>`
         SELECT id FROM render_jobs

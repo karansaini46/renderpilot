@@ -74,9 +74,11 @@ interface Project {
   stylePreference: string;
   notes: string;
   status: string;
+  clientName: string | null;
   projectFiles: ProjectFile[];
   renders: Render[];
   renderJobs: RenderJob[];
+  revisionNotes?: any[];
 }
 
 interface ProjectDetailsPageProps {
@@ -118,6 +120,9 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
   const [feedbackAction, setFeedbackAction] = useState('regenerate similar');
   const [feedbackRejections, setFeedbackRejections] = useState<string[]>([]);
   const [feedbackNotes, setFeedbackNotes] = useState('');
+  const [feedbackClientName, setFeedbackClientName] = useState('');
+  const [feedbackReason, setFeedbackReason] = useState('');
+  const [feedbackRequestedChange, setFeedbackRequestedChange] = useState('');
   const [isSavingFeedback, setIsSavingFeedback] = useState(false);
 
   // Launch Modal State
@@ -128,6 +133,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
   const [selectedMaterials, setSelectedMaterials] = useState<string[]>([]);
   const [selectedGeometryLockMode, setSelectedGeometryLockMode] = useState('accurate');
   const [forceRegenerate, setForceRegenerate] = useState(false);
+  const [promptModifier, setPromptModifier] = useState('');
 
   // Material Mapping State
   const [materialMappings, setMaterialMappings] = useState<any[]>([]);
@@ -490,7 +496,8 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
             sceneType: selectedSceneType,
             projectType: selectedProjectType,
             materialChoices: selectedMaterials,
-            geometryLockMode: selectedGeometryLockMode
+            geometryLockMode: selectedGeometryLockMode,
+            promptModifier: promptModifier.trim() || undefined
           })
         })
       });
@@ -660,6 +667,9 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
     setFeedbackAction(details.action || 'regenerate similar');
     setFeedbackRejections(details.rejectionReasons || []);
     setFeedbackNotes(render.feedbackNotes || '');
+    setFeedbackClientName(project?.clientName || '');
+    setFeedbackReason('');
+    setFeedbackRequestedChange('');
     
     setIsReviewDrawerOpen(true);
   };
@@ -667,6 +677,9 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
   const handleCloseReviewDrawer = () => {
     setIsReviewDrawerOpen(false);
     setSelectedReviewRender(null);
+    setFeedbackClientName('');
+    setFeedbackReason('');
+    setFeedbackRequestedChange('');
   };
 
   const toggleRejectionReason = (reason: string) => {
@@ -691,7 +704,10 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
           scores: feedbackScores,
           action: feedbackAction,
           rejectionReasons: feedbackApproved ? [] : feedbackRejections,
-          notes: feedbackNotes
+          notes: feedbackNotes,
+          clientName: feedbackClientName.trim() || null,
+          reason: feedbackReason.trim() || null,
+          requestedChange: feedbackRequestedChange.trim() || null
         })
       });
 
@@ -1037,7 +1053,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                             onChange={(e) => setSelectedCategory(e.target.value)}
                             className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-250 focus:outline-none focus:border-indigo-500"
                           >
-                            {['wall', 'floor', 'ceiling', 'glass', 'frame', 'wood', 'stone', 'concrete', 'metal', 'vegetation', 'furniture', 'sky'].map((cat) => (
+                            {['wall', 'floor', 'ceiling', 'glass', 'frame', 'wood', 'stone', 'concrete', 'metal', 'vegetation', 'furniture', 'sky', 'roof', 'door'].map((cat) => (
                               <option key={cat} value={cat}>{cat.toUpperCase()}</option>
                             ))}
                           </select>
@@ -1200,10 +1216,24 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                               </div>
                             </div>
 
-                            <div className="bg-slate-900/40 border border-slate-900/60 rounded-lg p-2.5">
-                              <span className="block text-[8px] text-slate-550 font-bold uppercase tracking-wider mb-0.5">Finish / Details</span>
-                              <span className="text-xs font-medium text-slate-300 italic">&ldquo;{mapping.selectedMaterial}&rdquo;</span>
-                            </div>
+                             <div className="bg-slate-900/40 border border-slate-900/60 rounded-lg p-2.5">
+                               <span className="block text-[8px] text-slate-550 font-bold uppercase tracking-wider mb-0.5">Finish / Details</span>
+                               <span className="text-xs font-medium text-slate-300 italic">&ldquo;{mapping.selectedMaterial}&rdquo;</span>
+                               {mapping.correctionSource === 'heuristic' && (
+                                 <div className="mt-2 pt-2 border-t border-slate-900/40 flex flex-col gap-1">
+                                   <div className="flex items-center space-x-1.5">
+                                     <span className="px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[8px] font-bold rounded uppercase tracking-wider">
+                                       System Guess: {((mapping.confidence || 0) * 100).toFixed(0)}% Confident
+                                     </span>
+                                   </div>
+                                   {mapping.reason && (
+                                     <p className="text-[9.5px] text-slate-400 leading-normal">
+                                       <span className="font-semibold text-slate-500">Reason:</span> {mapping.reason}
+                                     </p>
+                                   )}
+                                 </div>
+                               )}
+                             </div>
 
                             <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-900/60">
                               <button
@@ -1242,6 +1272,13 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
             </h2>
             
             <div className="space-y-3.5">
+              {project.clientName && (
+                <div>
+                  <span className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Client Name</span>
+                  <span className="text-xs font-semibold text-slate-350 bg-slate-950 border border-slate-900 px-3 py-1.5 rounded block">{project.clientName}</span>
+                </div>
+              )}
+              
               <div>
                 <span className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Project Type</span>
                 <span className="text-xs font-semibold text-slate-350 bg-slate-950 border border-slate-900 px-3 py-1.5 rounded block">{project.projectType}</span>
@@ -1517,6 +1554,50 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                           </button>
                         );
                       })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Client Name (Optional) */}
+                <div className="bg-slate-950 border border-slate-850 rounded-xl p-4.5 space-y-3.5">
+                  <label className="block text-xs font-bold text-slate-300">Client Name (Optional)</label>
+                  <input
+                    type="text"
+                    value={feedbackClientName}
+                    onChange={(e) => setFeedbackClientName(e.target.value)}
+                    placeholder="e.g. Acme Corporation or John Doe"
+                    className="w-full bg-slate-900 border border-slate-850 text-slate-350 text-xs rounded-lg px-3 py-2.5 focus:border-indigo-500 focus:outline-none placeholder-slate-650 font-medium"
+                  />
+                </div>
+
+                {/* Revision Details (Conditional) */}
+                {(!feedbackApproved || (feedbackAction && feedbackAction !== 'none')) && (
+                  <div className="bg-slate-950 border border-slate-850 rounded-xl p-4.5 space-y-4">
+                    <span className="block text-xs font-bold text-slate-300">Revision Details</span>
+                    
+                    <div className="space-y-1.5">
+                      <label className="block text-[10.5px] font-semibold text-slate-400">Reason for Revision</label>
+                      <input
+                        type="text"
+                        value={feedbackReason}
+                        onChange={(e) => setFeedbackReason(e.target.value)}
+                        placeholder="e.g. Too dark, incorrect wood finish"
+                        className="w-full bg-slate-900 border border-slate-850 text-slate-350 text-xs rounded-lg px-3 py-2.5 focus:border-indigo-500 focus:outline-none placeholder-slate-650 font-medium"
+                      />
+                    </div>
+                    
+                    <div className="space-y-1.5">
+                      <label className="block text-[10.5px] font-semibold text-slate-400">Requested Change (Prompt Suggestion)</label>
+                      <input
+                        type="text"
+                        value={feedbackRequestedChange}
+                        onChange={(e) => setFeedbackRequestedChange(e.target.value)}
+                        placeholder="e.g. user prefers warmer lighting"
+                        className="w-full bg-slate-900 border border-slate-850 text-slate-355 text-xs rounded-lg px-3 py-2.5 focus:border-indigo-500 focus:outline-none placeholder-slate-650 font-medium"
+                      />
+                      <p className="text-[10px] text-slate-500 leading-normal">
+                        This text will be stored as an interactive prompt modifier suggestion for future jobs.
+                      </p>
                     </div>
                   </div>
                 )}
@@ -1925,6 +2006,63 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                     );
                   })}
                 </div>
+              </div>
+
+              {/* Step 6: Custom Prompt Modifier & Suggestions */}
+              <div className="bg-slate-950 border border-slate-850 rounded-xl p-5 space-y-4">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">
+                    6. Custom Prompt Modifier
+                  </label>
+                  <input
+                    type="text"
+                    value={promptModifier}
+                    onChange={(e) => setPromptModifier(e.target.value)}
+                    placeholder="e.g. user prefers warmer lighting, reduce greenery"
+                    className="w-full bg-slate-900 border border-slate-850 text-slate-200 text-xs rounded-lg px-3 py-2.5 focus:border-indigo-500 focus:outline-none placeholder-slate-600 font-medium"
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1.5 leading-normal">
+                    This modifier is appended to the compiled prompt. You can accept suggestions from previous revisions below, edit them, or type your own.
+                  </p>
+                </div>
+
+                {project?.revisionNotes && project.revisionNotes.length > 0 && (
+                  <div className="space-y-2.5 pt-3.5 border-t border-slate-900/60">
+                    <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                      Client Revision Suggestions (Click to Append)
+                    </span>
+                    <div className="flex flex-wrap gap-2.5">
+                      {project.revisionNotes.map((note: any) => {
+                        const suggestionText = note.requestedChange;
+                        if (!suggestionText) return null;
+                        return (
+                          <button
+                            key={note.id}
+                            type="button"
+                            onClick={() => {
+                              const currentVal = promptModifier.trim();
+                              if (!currentVal) {
+                                setPromptModifier(suggestionText);
+                              } else {
+                                const terms = currentVal.split(',').map(t => t.trim());
+                                if (!terms.includes(suggestionText)) {
+                                  setPromptModifier(`${currentVal}, ${suggestionText}`);
+                                }
+                              }
+                            }}
+                            className="text-left bg-slate-900/50 hover:bg-indigo-950/20 border border-slate-800 hover:border-indigo-500/30 rounded-lg px-3 py-2 text-[10.5px] font-medium text-slate-300 hover:text-indigo-400 transition-all flex items-center space-x-2 group"
+                          >
+                            <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 group-hover:animate-pulse" />
+                            <span>{suggestionText}</span>
+                            {note.reason && (
+                              <span className="text-[9px] text-slate-500">({note.reason})</span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 

@@ -36,3 +36,9 @@ storage/outputs/*
 
 # Setup checklist documentation (keeps local only)
 docs/setup.md
+
+# TS Build Cache
+*.tsbuildinfo
+
+# Blender models
+*.blend

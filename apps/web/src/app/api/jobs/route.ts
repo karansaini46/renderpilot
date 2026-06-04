@@ -32,7 +32,7 @@ async function recoverStaleJobs() {
 
       if (retryCount < maxRetries) {
         const newRetry = retryCount + 1;
-        await prisma.$transaction(async (tx) => {
+        await prisma.$transaction(async (tx: any) => {
           await tx.renderJob.update({
             where: { id: job.id },
             data: {
@@ -55,7 +55,7 @@ async function recoverStaleJobs() {
         });
         console.log(`[Stale Job Recovery]: Rescheduled job ${job.id} (Retry ${newRetry}/${maxRetries})`);
       } else {
-        await prisma.$transaction(async (tx) => {
+        await prisma.$transaction(async (tx: any) => {
           await tx.renderJob.update({
             where: { id: job.id },
             data: {
@@ -206,7 +206,7 @@ export async function POST(request: Request) {
         projectId: projectId
       });
 
-      const newJob = await prisma.$transaction(async (tx) => {
+      const newJob = await prisma.$transaction(async (tx: any) => {
         const createdJob = await tx.renderJob.create({
           data: {
             id: jobId,
@@ -285,7 +285,7 @@ export async function POST(request: Request) {
           locked: true
         }
       });
-      dbLockedMaterials = lockedMappings.map(m => {
+      dbLockedMaterials = lockedMappings.map((m: any) => {
         const finish = (m.selectedMaterial || '').trim();
         const zone = (m.detectedClass || '').trim();
         if (finish && zone) {
@@ -310,7 +310,8 @@ export async function POST(request: Request) {
       sceneType,
       stylePromptTemplate: baseTemplate,
       materialChoices: combinedMaterials,
-      memoryPrompt: memoryApplied ? finalSettings.prompt : undefined
+      memoryPrompt: memoryApplied ? finalSettings.prompt : undefined,
+      promptModifier: userSettings.promptModifier
     });
 
     finalSettings.prompt = finalPrompt;
@@ -380,7 +381,7 @@ export async function POST(request: Request) {
     const jobSettings = JSON.stringify(finalSettings);
 
     // Create the job and its initial event log record inside a transaction
-    const newJob = await prisma.$transaction(async (tx) => {
+    const newJob = await prisma.$transaction(async (tx: any) => {
       const createdJob = await tx.renderJob.create({
         data: {
           id: jobId,
@@ -505,12 +506,14 @@ function buildFinalPrompt({
   stylePromptTemplate,
   materialChoices,
   memoryPrompt,
+  promptModifier,
 }: {
   projectType: string;
   sceneType: string;
   stylePromptTemplate: string;
   materialChoices: string[];
   memoryPrompt?: string;
+  promptModifier?: string;
 }) {
   let promptParts: string[] = [];
 
@@ -523,7 +526,7 @@ function buildFinalPrompt({
 
   // 3. Add material choices highlight tags
   if (materialChoices && materialChoices.length > 0) {
-    const materialsStr = materialChoices.map(m => m.toLowerCase()).join(', ');
+    const materialsStr = materialChoices.map((m: any) => m.toLowerCase()).join(', ');
     promptParts.push(`with material highlights of ${materialsStr}`);
   }
 
@@ -533,8 +536,13 @@ function buildFinalPrompt({
     promptParts.push(`fine-tuned details: ${memoryPrompt}`);
   }
 
+  // 5. Custom prompt revision modifiers
+  if (promptModifier && promptModifier.trim() !== '') {
+    promptParts.push(promptModifier.trim());
+  }
+
   return promptParts
-    .map(part => part.trim())
+    .map((part: any) => part.trim())
     .filter(Boolean)
     .join(', ');
 }

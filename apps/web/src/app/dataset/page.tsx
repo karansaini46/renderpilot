@@ -15,9 +15,10 @@ import {
   Activity,
   ArrowRightLeft,
   Loader2,
-  FileText
+  FileText,
+  AlertTriangle,
+  Download
 } from 'lucide-react';
-import Link from 'next/link';
 
 interface TrainingSample {
   id: string;
@@ -51,6 +52,7 @@ export default function DatasetPage() {
   const [styleFilter, setStyleFilter] = useState('All');
   const [splitFilter, setSplitFilter] = useState('All');
   const [readinessFilter, setReadinessFilter] = useState('All');
+  const [minQualityFilter, setMinQualityFilter] = useState<number>(0);
   const [searchQuery, setSearchQuery] = useState('');
 
   // Editing state for caption placeholders
@@ -134,16 +136,57 @@ export default function DatasetPage() {
     const matchesReadiness = readinessFilter === 'All' || 
       (readinessFilter === 'Approved' ? s.approvedForTraining : !s.approvedForTraining);
     
+    // Filter by quality score
+    const matchesQuality = minQualityFilter === 0 || 
+      (s.qualityScore !== null && s.qualityScore >= minQualityFilter);
+    
     const matchesSearch = searchQuery === '' || 
       (s.caption && s.caption.toLowerCase().includes(searchQuery.toLowerCase())) ||
       (s.render?.project?.name && s.render.project.name.toLowerCase().includes(searchQuery.toLowerCase())) ||
       (s.sceneType && s.sceneType.toLowerCase().includes(searchQuery.toLowerCase()));
 
-    return matchesStyle && matchesSplit && matchesReadiness && matchesSearch;
+    return matchesStyle && matchesSplit && matchesReadiness && matchesQuality && matchesSearch;
   });
 
   // Unique Styles list
   const uniqueStyles = Array.from(new Set(samples.map(s => s.style?.name).filter(Boolean)));
+
+  // Calculate style readiness metrics & warnings from the complete list of samples
+  const styleStats = uniqueStyles.map(styleName => {
+    const styleSamples = samples.filter(s => s.style?.name === styleName);
+    const styleApprovedCount = styleSamples.filter(s => s.approvedForTraining).length;
+    const styleTotalCount = styleSamples.length;
+    const isWarning = styleApprovedCount < 10;
+    return {
+      styleName,
+      approvedCount: styleApprovedCount,
+      totalCount: styleTotalCount,
+      isWarning
+    };
+  });
+
+  const stylesWithWarning = styleStats.filter(s => s.isWarning);
+
+  // Group filtered samples by Style Name and Scene Type
+  const groupedFilteredSamples: {
+    [styleName: string]: {
+      [sceneType: string]: TrainingSample[];
+    };
+  } = {};
+
+  filteredSamples.forEach(sample => {
+    const styleName = sample.style?.name || 'Custom Style';
+    const sceneType = sample.sceneType || 'Unspecified';
+    if (!groupedFilteredSamples[styleName]) {
+      groupedFilteredSamples[styleName] = {};
+    }
+    if (!groupedFilteredSamples[styleName][sceneType]) {
+      groupedFilteredSamples[styleName][sceneType] = [];
+    }
+    groupedFilteredSamples[styleName][sceneType].push(sample);
+  });
+
+  const sortedStyleNames = Object.keys(groupedFilteredSamples).sort();
 
   const renderStars = (rating: number | null) => {
     if (!rating) return null;
@@ -218,6 +261,27 @@ export default function DatasetPage() {
         </div>
       </div>
 
+      {/* Warnings Banner if low datasets exist */}
+      {!isLoading && stylesWithWarning.length > 0 && (
+        <div className="mb-8 p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-start gap-3">
+          <AlertTriangle className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
+          <div>
+            <h4 className="text-sm font-bold text-amber-400">Dataset Readiness Warnings</h4>
+            <p className="text-xs text-slate-400 mt-1">
+              The following styles do not meet the minimum recommended dataset size (10 approved samples) for fine-tuning:
+            </p>
+            <div className="flex flex-wrap gap-2 mt-3">
+              {stylesWithWarning.map(ws => (
+                <span key={ws.styleName} className="px-2.5 py-0.5 rounded-full bg-slate-950 border border-slate-800 text-[10px] font-bold text-amber-350 flex items-center gap-1.5 uppercase tracking-wide">
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                  {ws.styleName}: {ws.approvedCount}/10 approved
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Filters Bar */}
       <div className="bg-slate-900/40 backdrop-blur border border-slate-900/60 p-5 rounded-xl mb-8 flex flex-col lg:flex-row items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-4 w-full lg:w-auto">
@@ -226,7 +290,7 @@ export default function DatasetPage() {
             <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
             <input
               type="text"
-              placeholder="Search captions or projects..."
+              placeholder="Search captions, scene types or projects..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-9 pr-4 py-2 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors"
@@ -276,6 +340,23 @@ export default function DatasetPage() {
               <option value="Pending">Needs Curation</option>
             </select>
           </div>
+
+          {/* Quality Score Filter */}
+          <div className="flex items-center space-x-2">
+            <Star className="h-3.5 w-3.5 text-slate-500" />
+            <select
+              value={minQualityFilter}
+              onChange={(e) => setMinQualityFilter(Number(e.target.value))}
+              className="bg-slate-950 border border-slate-800 text-xs text-slate-300 px-3 py-2 rounded-lg focus:outline-none focus:border-indigo-500"
+            >
+              <option value={0}>All Quality Scores</option>
+              <option value={1}>★ 1+ Stars</option>
+              <option value={2}>★ 2+ Stars</option>
+              <option value={3}>★ 3+ Stars</option>
+              <option value={4}>★ 4+ Stars</option>
+              <option value={5}>★ 5 Stars</option>
+            </select>
+          </div>
         </div>
 
         <div className="text-slate-500 text-xs font-semibold uppercase tracking-wider shrink-0 lg:ml-auto">
@@ -283,7 +364,7 @@ export default function DatasetPage() {
         </div>
       </div>
 
-      {/* Samples Grid Display */}
+      {/* Samples Grouped Display */}
       {isLoading ? (
         <div className="flex flex-col items-center justify-center py-20">
           <Loader2 className="h-10 w-10 text-indigo-500 animate-spin mb-4" />
@@ -300,171 +381,249 @@ export default function DatasetPage() {
           </p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredSamples.map((sample) => {
-            const styleName = sample.style?.name || 'Custom Style';
-            const projectName = sample.render?.project?.name || 'Unknown Project';
+        <div className="space-y-10">
+          {sortedStyleNames.map((styleName) => {
+            const sceneGroups = groupedFilteredSamples[styleName];
+            const sortedSceneTypes = Object.keys(sceneGroups).sort();
+            
+            // Calculate total and approved count for style metrics
+            const styleStatsObj = styleStats.find(s => s.styleName === styleName);
+            const styleApproved = styleStatsObj?.approvedCount ?? 0;
+            const styleTotal = styleStatsObj?.totalCount ?? 0;
+            const showStyleWarning = styleApproved < 10;
+            const styleId = samples.find(s => (s.style?.name || 'Custom Style') === styleName)?.styleId;
             
             return (
               <div 
-                key={sample.id}
-                className={`relative flex flex-col bg-slate-900/30 backdrop-blur rounded-xl border transition-all duration-300 overflow-hidden group ${
-                  sample.approvedForTraining 
-                    ? 'border-emerald-500/20 shadow-[0_0_15px_rgba(16,185,129,0.05)]' 
-                    : 'border-slate-900/80 hover:border-slate-800'
-                }`}
+                key={styleName} 
+                className="bg-slate-900/20 border border-slate-900 rounded-2xl p-6 lg:p-8 backdrop-blur-sm shadow-[0_4px_20px_rgba(0,0,0,0.2)]"
               >
-                {/* Image Showcase */}
-                <div className="relative aspect-video w-full overflow-hidden bg-slate-950 border-b border-slate-900/80">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={sample.imageUrl}
-                    alt={sample.caption || 'Dataset rendering candidate'}
-                    className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
-                  />
-                  
-                  {/* Floating badges */}
-                  <div className="absolute top-3 left-3 flex flex-wrap gap-1.5 z-10">
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-900/90 text-slate-200 border border-slate-800 uppercase tracking-wider">
-                      {sample.sceneType || 'general'}
-                    </span>
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold border uppercase tracking-wider ${
-                      sample.datasetSplit === 'train' 
-                        ? 'bg-indigo-950/90 text-indigo-400 border-indigo-500/30' 
-                        : sample.datasetSplit === 'validation'
-                        ? 'bg-sky-950/90 text-sky-400 border-sky-500/30'
-                        : 'bg-purple-950/90 text-purple-400 border-purple-500/30'
-                    }`}>
-                      {sample.datasetSplit}
-                    </span>
+                {/* Style Header */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-900/80 mb-6 gap-4">
+                  <div>
+                    <h2 className="text-xl font-extrabold tracking-wide text-slate-100">
+                      Style: <span className="text-indigo-400">{styleName}</span>
+                    </h2>
+                    <div className="flex items-center gap-3 mt-1.5 text-xs text-slate-400">
+                      <span>Readiness: <strong className="text-indigo-300">{styleApproved}</strong> / {styleTotal} Approved</span>
+                      <span className="text-slate-800">•</span>
+                      <span>Total Candidates: {styleTotal}</span>
+                    </div>
                   </div>
-
-                  <div className="absolute bottom-3 right-3 z-10 px-2 py-0.5 bg-slate-950/90 rounded border border-slate-800">
-                    {renderStars(sample.qualityScore)}
+                  
+                  <div className="flex flex-wrap items-center gap-3 self-start sm:self-center">
+                    {showStyleWarning && (
+                      <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-semibold">
+                        <AlertTriangle className="h-4 w-4 shrink-0" />
+                        <span>Low sample size ({styleApproved}/10 approved)</span>
+                      </div>
+                    )}
+                    
+                    <button
+                      onClick={() => {
+                        if (styleId) {
+                          window.location.href = `/api/styles/${styleId}/export`;
+                        }
+                      }}
+                      disabled={styleApproved === 0}
+                      className={`flex items-center space-x-1.5 px-4 py-2 rounded-lg font-semibold text-xs border transition-all ${
+                        styleApproved > 0
+                          ? 'bg-indigo-600 border-indigo-500/50 hover:bg-indigo-500 text-white shadow-lg hover:shadow-indigo-500/10'
+                          : 'bg-slate-900/50 border-slate-800 text-slate-500 cursor-not-allowed'
+                      }`}
+                      title={styleApproved > 0 ? "Export approved samples as a ZIP package" : "Approve at least 1 sample to export package"}
+                    >
+                      <Download className="h-4 w-4" />
+                      <span>Export Package</span>
+                    </button>
                   </div>
                 </div>
 
-                {/* Body details */}
-                <div className="p-5 flex-1 flex flex-col">
-                  {/* Style and Project title */}
-                  <div className="flex items-start justify-between gap-4 mb-3">
-                    <div>
-                      <h4 className="text-sm font-bold text-slate-100 tracking-wider truncate max-w-[200px]" title={styleName}>
-                        {styleName}
-                      </h4>
-                      <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">
-                        Project: {projectName}
-                      </p>
-                    </div>
+                {/* Scene Groups */}
+                <div className="space-y-8">
+                  {sortedSceneTypes.map((sceneType) => {
+                    const groupSamples = sceneGroups[sceneType];
                     
-                    <div className="flex items-center space-x-1.5">
-                      <span className={`h-1.5 w-1.5 rounded-full ${sample.approvedForTraining ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-                      <span className={`text-[10px] font-bold uppercase tracking-wider ${
-                        sample.approvedForTraining ? 'text-emerald-400' : 'text-amber-500'
-                      }`}>
-                        {sample.approvedForTraining ? 'Approved' : 'Needs Audit'}
-                      </span>
-                    </div>
-                  </div>
+                    return (
+                      <div key={sceneType} className="space-y-4">
+                        {/* Scene Type Heading */}
+                        <div className="flex items-center space-x-2">
+                          <div className="h-1.5 w-1.5 rounded-full bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.6)]" />
+                          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                            {sceneType} &mdash; {groupSamples.length} {groupSamples.length === 1 ? 'Sample' : 'Samples'}
+                          </h3>
+                        </div>
 
-                  {/* Caption Editor Box */}
-                  <div className="bg-slate-950/60 border border-slate-900 rounded-lg p-3.5 mb-5 flex-1 flex flex-col justify-between">
-                    {editingId === sample.id ? (
-                      <div className="flex flex-col gap-2 h-full justify-between">
-                        <textarea
-                          value={editingCaption}
-                          onChange={(e) => setEditingCaption(e.target.value)}
-                          className="w-full flex-1 bg-slate-900 border border-slate-800 rounded-md p-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 resize-none min-h-[60px]"
-                          placeholder="Refine Caption Prompt..."
-                        />
-                        <div className="flex items-center justify-end space-x-2 mt-2">
-                          <button
-                            onClick={() => setEditingId(null)}
-                            disabled={isSavingCaption}
-                            className="px-2.5 py-1 text-[10px] font-semibold uppercase text-slate-400 hover:text-slate-200 transition-colors"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            onClick={() => saveCaption(sample.id)}
-                            disabled={isSavingCaption}
-                            className="flex items-center space-x-1 px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-[10px] font-bold uppercase text-white transition-colors"
-                          >
-                            {isSavingCaption ? (
-                              <Loader2 className="h-3 w-3 animate-spin" />
-                            ) : (
-                              <Check className="h-3 w-3" />
-                            )}
-                            <span>Save</span>
-                          </button>
+                        {/* Samples Cards Grid */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                          {groupSamples.map((sample) => {
+                            const projectName = sample.render?.project?.name || 'Unknown Project';
+                            
+                            return (
+                              <div 
+                                key={sample.id}
+                                className={`relative flex flex-col bg-slate-900/30 backdrop-blur rounded-xl border transition-all duration-300 overflow-hidden group ${
+                                  sample.approvedForTraining 
+                                    ? 'border-emerald-500/20 shadow-[0_0_15px_rgba(16,185,129,0.05)] bg-emerald-950/5' 
+                                    : 'border-slate-900/80 hover:border-slate-800'
+                                }`}
+                              >
+                                {/* Image Showcase */}
+                                <div className="relative aspect-video w-full overflow-hidden bg-slate-950 border-b border-slate-900/80">
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img
+                                    src={sample.imageUrl}
+                                    alt={sample.caption || 'Dataset rendering candidate'}
+                                    className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-[1.025]"
+                                  />
+                                  
+                                  {/* Floating badges */}
+                                  <div className="absolute top-3 left-3 flex flex-wrap gap-1.5 z-10">
+                                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-900/90 text-slate-200 border border-slate-800 uppercase tracking-wider">
+                                      {sample.sceneType || 'general'}
+                                    </span>
+                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold border uppercase tracking-wider ${
+                                      sample.datasetSplit === 'train' 
+                                        ? 'bg-indigo-950/90 text-indigo-400 border-indigo-500/30' 
+                                        : sample.datasetSplit === 'validation'
+                                        ? 'bg-sky-950/90 text-sky-400 border-sky-500/30'
+                                        : 'bg-purple-950/90 text-purple-400 border-purple-500/30'
+                                    }`}>
+                                      {sample.datasetSplit}
+                                    </span>
+                                  </div>
+
+                                  <div className="absolute bottom-3 right-3 z-10 px-2 py-0.5 bg-slate-950/90 rounded border border-slate-800">
+                                    {renderStars(sample.qualityScore)}
+                                  </div>
+                                </div>
+
+                                {/* Body details */}
+                                <div className="p-5 flex-1 flex flex-col">
+                                  {/* Project Title and Status */}
+                                  <div className="flex items-start justify-between gap-4 mb-3">
+                                    <div>
+                                      <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">
+                                        Project: {projectName}
+                                      </p>
+                                    </div>
+                                    
+                                    <div className="flex items-center space-x-1.5">
+                                      <span className={`h-1.5 w-1.5 rounded-full ${sample.approvedForTraining ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+                                      <span className={`text-[10px] font-bold uppercase tracking-wider ${
+                                        sample.approvedForTraining ? 'text-emerald-400' : 'text-amber-500'
+                                      }`}>
+                                        {sample.approvedForTraining ? 'Approved' : 'Needs Audit'}
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  {/* Caption Editor Box */}
+                                  <div className="bg-slate-950/60 border border-slate-900 rounded-lg p-3.5 mb-5 flex-1 flex flex-col justify-between">
+                                    {editingId === sample.id ? (
+                                      <div className="flex flex-col gap-2 h-full justify-between">
+                                        <textarea
+                                          value={editingCaption}
+                                          onChange={(e) => setEditingCaption(e.target.value)}
+                                          className="w-full flex-1 bg-slate-900 border border-slate-800 rounded-md p-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 resize-none min-h-[60px]"
+                                          placeholder="Refine Caption Prompt..."
+                                        />
+                                        <div className="flex items-center justify-end space-x-2 mt-2">
+                                          <button
+                                            onClick={() => setEditingId(null)}
+                                            disabled={isSavingCaption}
+                                            className="px-2.5 py-1 text-[10px] font-semibold uppercase text-slate-400 hover:text-slate-200 transition-colors"
+                                          >
+                                            Cancel
+                                          </button>
+                                          <button
+                                            onClick={() => saveCaption(sample.id)}
+                                            disabled={isSavingCaption}
+                                            className="flex items-center space-x-1 px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-[10px] font-bold uppercase text-white transition-colors"
+                                          >
+                                            {isSavingCaption ? (
+                                              <Loader2 className="h-3 w-3 animate-spin" />
+                                            ) : (
+                                              <Check className="h-3 w-3" />
+                                            )}
+                                            <span>Save</span>
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div className="flex flex-col h-full justify-between min-h-[80px]">
+                                        <div>
+                                          <p className="text-[10px] text-indigo-400/80 font-bold uppercase tracking-wider mb-1">Curation Caption</p>
+                                          <p className="text-xs text-slate-350 leading-relaxed italic">
+                                            &ldquo;{sample.caption || 'No caption template registered.'}&rdquo;
+                                          </p>
+                                        </div>
+                                        <button
+                                          onClick={() => startEditing(sample.id, sample.caption)}
+                                          className="flex items-center space-x-1.5 text-slate-500 hover:text-indigo-400 text-[10px] font-bold uppercase tracking-wider mt-3 self-end transition-colors"
+                                        >
+                                          <Edit3 className="h-3 w-3" />
+                                          <span>Edit Caption</span>
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {/* Actions Grid */}
+                                  <div className="grid grid-cols-3 gap-2.5 pt-4 border-t border-slate-900/60 mt-auto">
+                                    {/* Split Dropdown Button */}
+                                    <div className="flex flex-col gap-1">
+                                      <span className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">Set Split</span>
+                                      <select
+                                        value={sample.datasetSplit}
+                                        onChange={(e) => handleAction(sample.id, 'split', { datasetSplit: e.target.value })}
+                                        className="bg-slate-950 border border-slate-800 rounded-md text-[10px] font-bold text-slate-300 p-1.5 focus:outline-none focus:border-indigo-500"
+                                      >
+                                        <option value="train">Train</option>
+                                        <option value="validation">Val</option>
+                                        <option value="test">Test</option>
+                                      </select>
+                                    </div>
+
+                                    {/* Approve Toggle */}
+                                    <div className="flex flex-col gap-1">
+                                      <span className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">Readiness</span>
+                                      <button
+                                        onClick={() => handleAction(sample.id, 'approve', { approvedForTraining: !sample.approvedForTraining })}
+                                        className={`w-full py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider border transition-all ${
+                                          sample.approvedForTraining 
+                                            ? 'bg-emerald-950/20 text-emerald-400 border-emerald-500/30 shadow-[0_0_10px_rgba(16,185,129,0.05)]' 
+                                            : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-300'
+                                        }`}
+                                      >
+                                        {sample.approvedForTraining ? 'Ready' : 'Approve'}
+                                      </button>
+                                    </div>
+
+                                    {/* Delete button */}
+                                    <div className="flex flex-col gap-1">
+                                      <span className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">Exclude</span>
+                                      <button
+                                        onClick={() => {
+                                          if (confirm('Are you sure you want to exclude this variation from the dataset?')) {
+                                            handleAction(sample.id, 'delete', {});
+                                          }
+                                        }}
+                                        className="w-full flex items-center justify-center space-x-1 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider border border-slate-800 bg-slate-950 text-slate-500 hover:text-rose-400 hover:border-rose-500/20 transition-all"
+                                      >
+                                        <Trash2 className="h-3 w-3" />
+                                        <span>Delete</span>
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
-                    ) : (
-                      <div className="flex flex-col h-full justify-between min-h-[80px]">
-                        <div>
-                          <p className="text-[10px] text-indigo-400/80 font-bold uppercase tracking-wider mb-1">Curation Caption</p>
-                          <p className="text-xs text-slate-300 leading-relaxed italic">
-                            &ldquo;{sample.caption || 'No caption template registered.'}&rdquo;
-                          </p>
-                        </div>
-                        <button
-                          onClick={() => startEditing(sample.id, sample.caption)}
-                          className="flex items-center space-x-1.5 text-slate-500 hover:text-indigo-400 text-[10px] font-bold uppercase tracking-wider mt-3 self-end transition-colors"
-                        >
-                          <Edit3 className="h-3 w-3" />
-                          <span>Edit Caption</span>
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Actions Grid */}
-                  <div className="grid grid-cols-3 gap-2.5 pt-4 border-t border-slate-900/60 mt-auto">
-                    {/* Split Dropdown Button */}
-                    <div className="flex flex-col gap-1">
-                      <span className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">Set Split</span>
-                      <select
-                        value={sample.datasetSplit}
-                        onChange={(e) => handleAction(sample.id, 'split', { datasetSplit: e.target.value })}
-                        className="bg-slate-950 border border-slate-800 rounded-md text-[10px] font-bold text-slate-300 p-1.5 focus:outline-none focus:border-indigo-500"
-                      >
-                        <option value="train">Train</option>
-                        <option value="validation">Val</option>
-                        <option value="test">Test</option>
-                      </select>
-                    </div>
-
-                    {/* Approve Toggle */}
-                    <div className="flex flex-col gap-1">
-                      <span className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">Readiness</span>
-                      <button
-                        onClick={() => handleAction(sample.id, 'approve', { approvedForTraining: !sample.approvedForTraining })}
-                        className={`w-full py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider border transition-all ${
-                          sample.approvedForTraining 
-                            ? 'bg-emerald-950/20 text-emerald-400 border-emerald-500/30 shadow-[0_0_10px_rgba(16,185,129,0.05)]' 
-                            : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-300'
-                        }`}
-                      >
-                        {sample.approvedForTraining ? 'Ready' : 'Approve'}
-                      </button>
-                    </div>
-
-                    {/* Delete button */}
-                    <div className="flex flex-col gap-1">
-                      <span className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">Exclude</span>
-                      <button
-                        onClick={() => {
-                          if (confirm('Are you sure you want to exclude this variation from the dataset?')) {
-                            handleAction(sample.id, 'delete', {});
-                          }
-                        }}
-                        className="w-full flex items-center justify-center space-x-1 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider border border-slate-800 bg-slate-950 text-slate-500 hover:text-rose-400 hover:border-rose-500/20 transition-all"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                        <span>Delete</span>
-                      </button>
-                    </div>
-                  </div>
+                    );
+                  })}
                 </div>
               </div>
             );
