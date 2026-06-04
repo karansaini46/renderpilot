@@ -5,6 +5,65 @@ import { STYLE_PRESETS } from '../../../lib/style-presets';
 
 export const dynamic = 'force-dynamic';
 
+import { env } from '../../../config/env';
+import { analyzeProjectImage } from '../../../lib/prompt-brain/gemini-provider';
+import { composePrompt } from '../../../lib/prompt-brain/prompt-composer';
+import { PromptBrainSchema, SCENE_TYPES } from '../../../lib/prompt-brain/types';
+
+function createManualAnalysis(
+  sceneType: string,
+  projectType: string,
+  materials: string[],
+  materialMappings: any[]
+): PromptBrainSchema {
+  return {
+    scene_type: (SCENE_TYPES.includes(sceneType as any) ? sceneType : 'Exterior') as any,
+    confidence: 1.0,
+    camera_view: {
+      angle: 'standard',
+      elevation: 'eye-level',
+      description: 'Manual architectural perspective'
+    },
+    major_objects: [],
+    object_priority: [],
+    composition_lock: {
+      description: 'Manual lock',
+      lockAspects: ['overall layout'],
+      riskLevel: 'medium'
+    },
+    materials,
+    material_mappings: materialMappings.map(m => ({
+      objectName: m.objectName,
+      category: m.detectedClass,
+      suggestedMaterial: m.selectedMaterial,
+      confidence: 1.0
+    })),
+    texture_analysis: { description: '', dominantPatterns: [] },
+    surface_behavior: { glossiness: 'medium', roughness: 'medium', metallic: 'low', details: '' },
+    interior_light_analysis: { lightSources: [], dominantColorTemp: 'neutral', intensity: 'medium', description: '' },
+    exterior_light_analysis: { sunPosition: 'clear sky', timeOfDay: 'daylight', weatherCondition: 'clear', shadowSharpness: 'soft', description: '' },
+    mirror_analysis: { detected: false, count: 0, surfaceAreaEstimated: 'none', description: '' },
+    glass_analysis: { detected: false, transparencyLevel: 'medium', reflectionLevel: 'medium', description: '' },
+    reflection_guidance: { promptTriggers: [], renderSettingsAdjustment: '' },
+    room_type_protection: { roomType: 'unspecified', protectedElements: [], forbiddenSubstitutions: [] },
+    geometry_risks: [],
+    style_safety: { styleIncompatibilities: [], promptSafetyFlags: [] },
+    input_quality: { resolutionCheck: 'standard', compressionArtifacts: false, blurriness: 'none', score: 1.0 },
+    workflow_recommendation: { pipeline: 'standard', steps: [], reason: '' },
+    preserve_constraints: [],
+    forbidden_changes: [],
+    detail_enhancement_plan: { steps: [], targetAreas: [] },
+    suggested_render_mode: 'img2img',
+    suggested_denoise: 0.65,
+    suggested_geometry_lock: 'balanced',
+    positive_prompt_draft: '',
+    negative_prompt_draft: '',
+    risk_flags: [],
+    success_criteria: [],
+    user_summary: 'Manual mode prompt composition'
+  };
+}
+
 async function recoverStaleJobs() {
   try {
     const staleThreshold = new Date(Date.now() - 30 * 1000); // 30 seconds
@@ -311,38 +370,136 @@ export async function POST(request: Request) {
       ...dbLockedMaterials
     ]));
 
-    // Compile prompt using the prompt builder combining chosen components
-    const baseTemplate = finalSettings.prompt || stylePreset.promptTemplate;
-    const finalPrompt = buildFinalPrompt({
-      projectType,
-      sceneType,
-      stylePromptTemplate: baseTemplate,
-      materialChoices: combinedMaterials,
-      memoryPrompt: memoryApplied ? finalSettings.prompt : undefined,
-      promptModifier: userSettings.promptModifier
+    // --- PROMPT BRAIN INTEGRATION ---
+    const projectFile = project.projectFiles[0];
+    const pbProvider = env.PROMPT_BRAIN_PROVIDER || 'manual';
+    const pbModel = env.GEMINI_MODEL || 'gemini-2.5-flash';
+    
+    let analysisId = '';
+    let analysisResult: PromptBrainSchema | null = null;
+    let finalProvider = pbProvider;
+    
+    // Compute deterministic analysis cache key
+    const analysisCacheKey = projectFile 
+      ? createHash('md5').update(`${projectFile.id}_${pbProvider}_${pbModel}`).digest('hex')
+      : '';
+      
+    // Try to load cached analysis if caching is enabled
+    if (projectFile && env.PROMPT_BRAIN_CACHE_ENABLED && analysisCacheKey) {
+      try {
+        const cachedAnalysis = await prisma.promptBrainAnalysis.findFirst({
+          where: { cacheKey: analysisCacheKey }
+        });
+        if (cachedAnalysis) {
+          analysisResult = JSON.parse(cachedAnalysis.analysisJson) as PromptBrainSchema;
+          analysisId = cachedAnalysis.id;
+          finalProvider = cachedAnalysis.provider as any;
+        }
+      } catch (cacheErr: any) {
+        console.error('[PromptBrain Cache Read Error]:', cacheErr.message);
+      }
+    }
+    
+    // If not cached or caching is disabled, run analysis
+    if (!analysisResult && projectFile) {
+      if (pbProvider === 'gemini' && env.GEMINI_API_KEY) {
+        try {
+          const geminiRes = await analyzeProjectImage(project.id, sceneType);
+          if (geminiRes.success && geminiRes.analysis && geminiRes.analysis.confidence >= (env.PROMPT_BRAIN_MIN_CONFIDENCE || 0.75)) {
+            analysisResult = geminiRes.analysis;
+            finalProvider = 'gemini';
+          } else {
+            console.warn(`[PromptBrain Gemini Fallback]: Success=${geminiRes.success}, Confidence=${geminiRes.analysis?.confidence ?? 'N/A'}`);
+            finalProvider = 'manual';
+          }
+        } catch (geminiErr: any) {
+          console.error('[PromptBrain Gemini Request Error]:', geminiErr.message);
+          finalProvider = 'manual';
+        }
+      }
+      
+      // Fallback/Manual Mode: Construct manual analysis
+      if (!analysisResult) {
+        const dbMappings = await prisma.materialMapping.findMany({
+          where: { projectId: project.id }
+        });
+        analysisResult = createManualAnalysis(sceneType, projectType, combinedMaterials, dbMappings);
+        finalProvider = 'manual';
+      }
+      
+      // Save PromptBrainAnalysis row in database
+      try {
+        analysisId = `pba_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+        await prisma.promptBrainAnalysis.create({
+          data: {
+            id: analysisId,
+            projectId: project.id,
+            projectFileId: projectFile.id,
+            provider: finalProvider,
+            model: finalProvider === 'gemini' ? pbModel : 'manual',
+            sceneType: analysisResult.scene_type,
+            confidence: analysisResult.confidence,
+            analysisJson: JSON.stringify(analysisResult),
+            positivePrompt: analysisResult.positive_prompt_draft || '',
+            negativePrompt: analysisResult.negative_prompt_draft || '',
+            renderMode: analysisResult.suggested_render_mode || 'img2img',
+            denoise: analysisResult.suggested_denoise || 0.65,
+            geometryLockMode: analysisResult.suggested_geometry_lock || 'balanced',
+            cacheKey: analysisCacheKey,
+          }
+        });
+      } catch (dbSaveErr: any) {
+        console.error('[PromptBrain Save Error]:', dbSaveErr.message);
+      }
+    }
+
+    // Compose Prompt using Safe prompt composer
+    let combinedModifier = userSettings.promptModifier || '';
+    if (memoryApplied && finalSettings.prompt && finalSettings.prompt !== stylePreset.promptTemplate) {
+      combinedModifier = combinedModifier 
+        ? `${combinedModifier}, ${finalSettings.prompt}` 
+        : finalSettings.prompt;
+    }
+
+    const composerResult = composePrompt({
+      analysis: analysisResult!,
+      stylePreset,
+      renderMode: userSettings.geometryLockMode ? undefined : finalSettings.geometryLockMode as any,
+      promptModifier: combinedModifier
     });
 
-    finalSettings.prompt = finalPrompt;
-    finalSettings.negativePrompt = userSettings.negativePrompt || finalSettings.negativePrompt || stylePreset.negativePrompt;
+    // Merge composed attributes back to settings
+    finalSettings.promptBrainProvider = finalProvider;
+    finalSettings.promptBrainAnalysisId = analysisId;
+    finalSettings.promptBrainAnalysis = analysisResult;
+    finalSettings.prompt = composerResult.positivePrompt;
+    finalSettings.negativePrompt = composerResult.negativePrompt;
     
-    // Explicit user selections
+    // Explicit user selections / fallbacks
     finalSettings.projectType = projectType;
     finalSettings.sceneType = sceneType;
     finalSettings.materialChoices = combinedMaterials;
+    finalSettings.renderMode = userSettings.job_type || userSettings.jobType || composerResult.renderMode;
+    finalSettings.denoise = userSettings.denoise !== undefined ? userSettings.denoise : composerResult.denoise;
+    
+    // Validate and set geometryLockMode
+    let geometryLockMode = userSettings.geometryLockMode || finalSettings.geometryLockMode || composerResult.geometryLockMode || 'balanced';
+    const validModes = ['creative', 'balanced', 'accurate', 'technical'];
+    if (!validModes.includes(geometryLockMode.toLowerCase())) {
+      geometryLockMode = 'balanced';
+    }
+    finalSettings.geometryLockMode = geometryLockMode.toLowerCase();
+    
+    // Meta mappings to setting JSON
+    finalSettings.materialMappings = analysisResult!.material_mappings;
+    finalSettings.textureAnalysis = analysisResult!.texture_analysis;
+    finalSettings.lightAnalysis = sceneType === 'Interior' ? analysisResult!.interior_light_analysis : analysisResult!.exterior_light_analysis;
+    finalSettings.reflectionGuidance = analysisResult!.reflection_guidance;
+    finalSettings.successCriteria = analysisResult!.success_criteria;
 
     // Apply any explicit technical overrides if present (just in case)
     if (userSettings.steps) finalSettings.steps = userSettings.steps;
     if (userSettings.cfg_scale) finalSettings.cfg_scale = userSettings.cfg_scale;
-    if (userSettings.denoise !== undefined) finalSettings.denoise = userSettings.denoise;
-    
-    // Validate and set geometryLockMode, defaulting to 'accurate'
-    let geometryLockMode = userSettings.geometryLockMode || finalSettings.geometryLockMode || 'accurate';
-    const validModes = ['creative', 'balanced', 'accurate', 'technical'];
-    if (!validModes.includes(geometryLockMode.toLowerCase())) {
-      geometryLockMode = 'accurate';
-    }
-    finalSettings.geometryLockMode = geometryLockMode.toLowerCase();
-
     if (userSettings.seed) finalSettings.seed = userSettings.seed;
 
     // Compute deterministic cache key from render-critical parameters
