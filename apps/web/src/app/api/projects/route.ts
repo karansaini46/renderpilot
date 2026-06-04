@@ -31,7 +31,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const { name, projectType, sceneType, stylePreference, notes } = body;
+    const { name, projectType, sceneType, stylePreference, notes, clientName } = body;
 
     if (!name || name.trim() === '') {
       return NextResponse.json(
@@ -50,6 +50,7 @@ export async function POST(request: Request) {
         sceneType: sceneType || 'Exterior',
         stylePreference: stylePreference || 'Modern Luxury Exterior',
         notes: notes || '',
+        clientName: clientName || null,
         status: 'active',
       },
     });

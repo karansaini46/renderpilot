@@ -38,6 +38,7 @@ function ProjectsList() {
   
   // Modal form states
   const [projectName, setProjectName] = useState('');
+  const [clientName, setClientName] = useState('');
   const [projectType, setProjectType] = useState('Residential');
   const [sceneType, setSceneType] = useState('Exterior');
   const [stylePreference, setStylePreference] = useState('Modern Luxury Exterior');
@@ -83,12 +84,14 @@ function ProjectsList() {
           sceneType,
           stylePreference,
           notes: notes.trim(),
+          clientName: clientName.trim(),
         }),
       });
 
       if (res.ok) {
         // Reset form and reload projects
         setProjectName('');
+        setClientName('');
         setProjectType('Residential');
         setSceneType('Exterior');
         setStylePreference('Modern Luxury Exterior');
@@ -239,6 +242,20 @@ function ProjectsList() {
                   placeholder="e.g. Modern Cliffside Exterior"
                   value={projectName}
                   onChange={(e) => setProjectName(e.target.value)}
+                  className="w-full bg-slate-900/60 border border-slate-900 focus:border-indigo-500/50 focus:outline-none rounded-lg px-4 py-2.5 text-sm text-slate-200 placeholder-slate-500 transition-all"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-450 uppercase tracking-wider mb-1.5">
+                  Client Name (Optional)
+                </label>
+                <input 
+                  type="text" 
+                  disabled={isSubmitting}
+                  placeholder="e.g. Acme Corporation or John Doe"
+                  value={clientName}
+                  onChange={(e) => setClientName(e.target.value)}
                   className="w-full bg-slate-900/60 border border-slate-900 focus:border-indigo-500/50 focus:outline-none rounded-lg px-4 py-2.5 text-sm text-slate-200 placeholder-slate-500 transition-all"
                 />
               </div>

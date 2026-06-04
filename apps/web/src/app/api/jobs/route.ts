@@ -310,7 +310,8 @@ export async function POST(request: Request) {
       sceneType,
       stylePromptTemplate: baseTemplate,
       materialChoices: combinedMaterials,
-      memoryPrompt: memoryApplied ? finalSettings.prompt : undefined
+      memoryPrompt: memoryApplied ? finalSettings.prompt : undefined,
+      promptModifier: userSettings.promptModifier
     });
 
     finalSettings.prompt = finalPrompt;
@@ -505,12 +506,14 @@ function buildFinalPrompt({
   stylePromptTemplate,
   materialChoices,
   memoryPrompt,
+  promptModifier,
 }: {
   projectType: string;
   sceneType: string;
   stylePromptTemplate: string;
   materialChoices: string[];
   memoryPrompt?: string;
+  promptModifier?: string;
 }) {
   let promptParts: string[] = [];
 
@@ -531,6 +534,11 @@ function buildFinalPrompt({
   if (memoryPrompt && memoryPrompt !== stylePromptTemplate) {
     // Only append if it's different to avoid duplicate prompt segments
     promptParts.push(`fine-tuned details: ${memoryPrompt}`);
+  }
+
+  // 5. Custom prompt revision modifiers
+  if (promptModifier && promptModifier.trim() !== '') {
+    promptParts.push(promptModifier.trim());
   }
 
   return promptParts
