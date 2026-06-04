@@ -16,7 +16,8 @@ import {
   ArrowRightLeft,
   Loader2,
   FileText,
-  AlertTriangle
+  AlertTriangle,
+  Download
 } from 'lucide-react';
 
 interface TrainingSample {
@@ -390,6 +391,7 @@ export default function DatasetPage() {
             const styleApproved = styleStatsObj?.approvedCount ?? 0;
             const styleTotal = styleStatsObj?.totalCount ?? 0;
             const showStyleWarning = styleApproved < 10;
+            const styleId = samples.find(s => (s.style?.name || 'Custom Style') === styleName)?.styleId;
             
             return (
               <div 
@@ -409,12 +411,32 @@ export default function DatasetPage() {
                     </div>
                   </div>
                   
-                  {showStyleWarning && (
-                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-semibold self-start sm:self-center">
-                      <AlertTriangle className="h-4 w-4 shrink-0" />
-                      <span>Low sample size ({styleApproved}/10 approved)</span>
-                    </div>
-                  )}
+                  <div className="flex flex-wrap items-center gap-3 self-start sm:self-center">
+                    {showStyleWarning && (
+                      <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-semibold">
+                        <AlertTriangle className="h-4 w-4 shrink-0" />
+                        <span>Low sample size ({styleApproved}/10 approved)</span>
+                      </div>
+                    )}
+                    
+                    <button
+                      onClick={() => {
+                        if (styleId) {
+                          window.location.href = `/api/styles/${styleId}/export`;
+                        }
+                      }}
+                      disabled={styleApproved === 0}
+                      className={`flex items-center space-x-1.5 px-4 py-2 rounded-lg font-semibold text-xs border transition-all ${
+                        styleApproved > 0
+                          ? 'bg-indigo-600 border-indigo-500/50 hover:bg-indigo-500 text-white shadow-lg hover:shadow-indigo-500/10'
+                          : 'bg-slate-900/50 border-slate-800 text-slate-500 cursor-not-allowed'
+                      }`}
+                      title={styleApproved > 0 ? "Export approved samples as a ZIP package" : "Approve at least 1 sample to export package"}
+                    >
+                      <Download className="h-4 w-4" />
+                      <span>Export Package</span>
+                    </button>
+                  </div>
                 </div>
 
                 {/* Scene Groups */}
