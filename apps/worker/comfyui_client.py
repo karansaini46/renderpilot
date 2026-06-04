@@ -182,9 +182,10 @@ class ComfyUIClient:
         height: int = 768,
         steps: int = 20,
         cfg_scale: float = 7.0,
-        denoise: float = 1.0,
+        denoise: float | None = None,
         geometry_lock_mode: str = 'accurate',
         control_image: str | None = None,
+        prompt_brain_provider: str = 'unknown',
     ) -> dict:
         """
         Injects render parameters into a workflow template by scanning
@@ -212,26 +213,38 @@ class ComfyUIClient:
         """
         # Map geometry lock mode to ComfyUI variables
         mode = (geometry_lock_mode or 'accurate').lower()
-        mapped_denoise = denoise
         control_strength = 0.9
         prompt_constraint = ""
 
         if mode == 'creative':
-            mapped_denoise = 0.85
             control_strength = 0.4
             prompt_constraint = "more visual freedom, creative details"
         elif mode == 'balanced':
-            mapped_denoise = 0.65
             control_strength = 0.7
             prompt_constraint = "preserves composition, balanced style changes"
         elif mode == 'accurate':
-            mapped_denoise = 0.50
             control_strength = 0.9
             prompt_constraint = "strict composition preservation, realistic structure, client-ready layout"
-        elif mode == 'technical':
-            mapped_denoise = 0.30
+        elif mode in ('technical', 'faithful'):
             control_strength = 1.0
             prompt_constraint = "strongest preservation of contours, exact geometry, technical blueprint match"
+        else:
+            control_strength = 0.9
+            prompt_constraint = "strict composition preservation, realistic structure, client-ready layout"
+
+        # Resolve final denoise: respect explicit setting if present, else use safe defaults
+        if denoise is not None:
+            final_denoise = denoise
+        else:
+            if mode == 'creative':
+                final_denoise = 0.60
+            elif mode == 'balanced':
+                final_denoise = 0.40
+            else:  # accurate, faithful, technical, or default
+                final_denoise = 0.30
+
+        # Log final parameters
+        print(f"[ComfyUI Client] Final parameters: denoise={final_denoise}, geometryLockMode={mode}, control_strength={control_strength}, promptBrainProvider={prompt_brain_provider}")
 
         for node_id, node in workflow.items():
             class_type = node.get('class_type', '')
@@ -246,7 +259,7 @@ class ComfyUIClient:
                 if 'cfg' in inputs:
                     inputs['cfg'] = cfg_scale
                 if 'denoise' in inputs:
-                    inputs['denoise'] = mapped_denoise
+                    inputs['denoise'] = final_denoise
 
             # ControlNet apply nodes — inject control strength
             if class_type in ('ControlNetApply', 'ControlNetApplyAdvanced'):
@@ -618,11 +631,12 @@ class ComfyUIClient:
         height: int = 768,
         steps: int = 20,
         cfg_scale: float = 7.0,
-        denoise: float = 1.0,
+        denoise: float | None = None,
         geometry_lock_mode: str = 'accurate',
         control_image: str | None = None,
         comfyui_output_dir: str | None = None,
         on_progress=None,
+        prompt_brain_provider: str = 'unknown',
     ) -> list[str]:
         """
         End-to-end render pipeline: load template, inject params, submit,
@@ -671,6 +685,7 @@ class ComfyUIClient:
             denoise=denoise,
             geometry_lock_mode=geometry_lock_mode,
             control_image=control_image,
+            prompt_brain_provider=prompt_brain_provider,
         )
 
         # Step 3: Submit workflow

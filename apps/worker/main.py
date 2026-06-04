@@ -1139,24 +1139,26 @@ def process_job(conn, job):
         cfg_scale = clamped_settings.get("cfg_scale", 7.0)
         
         if not is_upscale:
-            # Resolve geometry lock mode and map to denoise
+            # Resolve geometry lock mode
             geometry_lock_mode = (clamped_settings.get("geometryLockMode") or clamped_settings.get("geometry_lock_mode") or "accurate").lower()
-            mode_denoise_map = {
-                "creative": 0.85,
-                "balanced": 0.65,
-                "accurate": 0.50,
-                "technical": 0.30
-            }
             
-            # Override denoise based on mode if it matches default or isn't specified
+            # Use safe defaults only when denoise is missing
             denoise = clamped_settings.get("denoise")
-            if denoise is None or denoise in (0.65, 0.50, 0.70, 0.55):
-                denoise = mode_denoise_map.get(geometry_lock_mode, 0.50)
+            if denoise is None:
+                if geometry_lock_mode == "creative":
+                    denoise = 0.60
+                elif geometry_lock_mode == "balanced":
+                    denoise = 0.40
+                else:  # accurate, faithful, technical, or default
+                    denoise = 0.30
                 
             clamped_settings["denoise"] = denoise
             clamped_settings["geometryLockMode"] = geometry_lock_mode
         else:
             geometry_lock_mode = "accurate"
+            denoise = clamped_settings.get("denoise", 0.30)
+            
+        prompt_brain_provider = clamped_settings.get("promptBrainProvider") or clamped_settings.get("prompt_brain_provider") or "unknown"
         
         print(f"[{datetime.datetime.now().strftime('%T')}] Launching sequential variation loops ({variations} total)...")
         
@@ -1202,7 +1204,8 @@ def process_job(conn, job):
                 denoise=denoise,
                 geometry_lock_mode=geometry_lock_mode,
                 control_image=comfyui_control_name,
-                on_progress=on_comfyui_progress
+                on_progress=on_comfyui_progress,
+                prompt_brain_provider=prompt_brain_provider
             )
             
             if not output_paths:
