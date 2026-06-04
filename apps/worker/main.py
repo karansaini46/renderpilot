@@ -921,7 +921,7 @@ def process_job(conn, job):
             # 2. Fetch the latest input reference image from project_files
             cur.execute("""
                 SELECT file_url FROM project_files 
-                WHERE project_id = %s AND file_type LIKE 'image/%'
+                WHERE project_id = %s AND file_type LIKE 'image/%%'
                 ORDER BY created_at DESC 
                 LIMIT 1;
             """, (project_id,))
@@ -1307,7 +1307,9 @@ def process_job(conn, job):
         
     except Exception as e:
         conn.rollback()
+        import traceback
         print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} encountered execution error: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         
         # Clean up partial workspace
         workspace_dir = os.path.join(config.LOCAL_WORKSPACE_ROOT, "jobs", job_id)

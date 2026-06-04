@@ -1,8 +1,14 @@
 import os
 import sys
 import boto3
+from boto3.s3.transfer import TransferConfig
+from botocore.config import Config
 from botocore.exceptions import ClientError
 from config import config
+
+# Socket-level timeouts to prevent indefinite hangs on slow/stalled S3 connections
+_BOTO_CONFIG = Config(connect_timeout=15, read_timeout=60, retries={'max_attempts': 2})
+_TRANSFER_CONFIG = TransferConfig(multipart_threshold=50 * 1024 * 1024)
 
 _s3_client = None
 
@@ -14,7 +20,8 @@ def get_s3_client():
                 's3',
                 region_name=config.AWS_REGION,
                 aws_access_key_id=config.AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY
+                aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY,
+                config=_BOTO_CONFIG
             )
         except Exception as e:
             # Shield AWS credentials from error output logs
@@ -34,7 +41,8 @@ def uploadFileFromWorker(localPath: str, key: str) -> None:
         s3.upload_file(
             Filename=localPath,
             Bucket=config.AWS_S3_BUCKET,
-            Key=key
+            Key=key,
+            Config=_TRANSFER_CONFIG
         )
     except ClientError as e:
         error_msg = f"Failed to upload file to S3: {e.response['Error']['Message'] if 'Error' in e.response else str(e)}"
@@ -58,7 +66,8 @@ def downloadFileToWorker(key: str, localPath: str) -> None:
         s3.download_file(
             Bucket=config.AWS_S3_BUCKET,
             Key=key,
-            Filename=localPath
+            Filename=localPath,
+            Config=_TRANSFER_CONFIG
         )
     except ClientError as e:
         error_msg = f"Failed to download file from S3: {e.response['Error']['Message'] if 'Error' in e.response else str(e)}"
