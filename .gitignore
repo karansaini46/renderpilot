@@ -42,3 +42,6 @@ docs/setup.md
 
 # Blender models
 *.blend
+
+# Development scratch scripts and verification utilities
+scratch/
