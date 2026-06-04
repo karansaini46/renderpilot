@@ -1037,7 +1037,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                             onChange={(e) => setSelectedCategory(e.target.value)}
                             className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-250 focus:outline-none focus:border-indigo-500"
                           >
-                            {['wall', 'floor', 'ceiling', 'glass', 'frame', 'wood', 'stone', 'concrete', 'metal', 'vegetation', 'furniture', 'sky'].map((cat) => (
+                            {['wall', 'floor', 'ceiling', 'glass', 'frame', 'wood', 'stone', 'concrete', 'metal', 'vegetation', 'furniture', 'sky', 'roof', 'door'].map((cat) => (
                               <option key={cat} value={cat}>{cat.toUpperCase()}</option>
                             ))}
                           </select>
@@ -1200,10 +1200,24 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                               </div>
                             </div>
 
-                            <div className="bg-slate-900/40 border border-slate-900/60 rounded-lg p-2.5">
-                              <span className="block text-[8px] text-slate-550 font-bold uppercase tracking-wider mb-0.5">Finish / Details</span>
-                              <span className="text-xs font-medium text-slate-300 italic">&ldquo;{mapping.selectedMaterial}&rdquo;</span>
-                            </div>
+                             <div className="bg-slate-900/40 border border-slate-900/60 rounded-lg p-2.5">
+                               <span className="block text-[8px] text-slate-550 font-bold uppercase tracking-wider mb-0.5">Finish / Details</span>
+                               <span className="text-xs font-medium text-slate-300 italic">&ldquo;{mapping.selectedMaterial}&rdquo;</span>
+                               {mapping.correctionSource === 'heuristic' && (
+                                 <div className="mt-2 pt-2 border-t border-slate-900/40 flex flex-col gap-1">
+                                   <div className="flex items-center space-x-1.5">
+                                     <span className="px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[8px] font-bold rounded uppercase tracking-wider">
+                                       System Guess: {((mapping.confidence || 0) * 100).toFixed(0)}% Confident
+                                     </span>
+                                   </div>
+                                   {mapping.reason && (
+                                     <p className="text-[9.5px] text-slate-400 leading-normal">
+                                       <span className="font-semibold text-slate-500">Reason:</span> {mapping.reason}
+                                     </p>
+                                   )}
+                                 </div>
+                               )}
+                             </div>
 
                             <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-900/60">
                               <button

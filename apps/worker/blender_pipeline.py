@@ -44,7 +44,55 @@ def get_scene_bounding_box():
     size = mathutils.Vector((max_x - min_x, max_y - min_y, max_z - min_z))
     return center, size, min_z
 
+def extract_scene_materials(output_dir):
+    detected = []
+    for obj in bpy.context.scene.objects:
+        if obj.type != 'MESH':
+            continue
+        
+        collections = [col.name for col in obj.users_collection]
+        
+        if obj.data.materials:
+            for mat in obj.data.materials:
+                if mat is None:
+                    continue
+                
+                base_color = [1.0, 1.0, 1.0, 1.0]
+                if hasattr(mat, 'diffuse_color'):
+                    base_color = list(mat.diffuse_color)
+                
+                if mat.use_nodes and mat.node_tree:
+                    for node in mat.node_tree.nodes:
+                        if node.type == 'BSDF_PRINCIPLED':
+                            base_color_socket = node.inputs.get('Base Color')
+                            if base_color_socket and not base_color_socket.is_linked:
+                                base_color = list(base_color_socket.default_value)
+                            break
+                            
+                detected.append({
+                    "object_name": obj.name,
+                    "material_name": mat.name,
+                    "collections": collections,
+                    "base_color": base_color
+                })
+        else:
+            detected.append({
+                "object_name": obj.name,
+                "material_name": "",
+                "collections": collections,
+                "base_color": [0.8, 0.8, 0.8, 1.0]
+            })
+            
+    out_path = os.path.join(output_dir, "detected_scene_materials.json")
+    with open(out_path, "w") as f:
+        json.dump(detected, f)
+
 def setup_and_render_previews(output_dir):
+    try:
+        extract_scene_materials(output_dir)
+    except Exception as e:
+        print(f"Error extracting scene materials: {e}", file=sys.stderr)
+
     try:
         bpy.context.scene.render.engine = 'BLENDER_EEVEE_NEXT'
     except TypeError:
@@ -319,7 +367,7 @@ def run_blender_pipeline(job_id: str, project_id: str, settings_json: str, local
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
     }
 
-def run_camera_preview_pipeline(job_id: str, project_id: str, user_id: str, local_blend_path: str) -> list:
+def run_camera_preview_pipeline(job_id: str, project_id: str, user_id: str, local_blend_path: str) -> tuple:
     """
     Runs the Blender headless camera preview pipeline to generate 3 camera candidates.
     """
@@ -403,9 +451,20 @@ def run_camera_preview_pipeline(job_id: str, project_id: str, user_id: str, loca
             "rotation": candidate["rotation"]
         })
         
+    # Read detected scene materials if present before cleanup
+    detected_materials = []
+    materials_json_path = os.path.join(workspace_dir, "detected_scene_materials.json")
+    if os.path.exists(materials_json_path):
+        try:
+            with open(materials_json_path, "r") as f:
+                detected_materials = json.load(f)
+            print(f"[{datetime.datetime.now().strftime('%T')}] Read {len(detected_materials)} detected materials from Blender scene.")
+        except Exception as mat_err:
+            print(f"Failed to read detected scene materials JSON: {mat_err}", file=sys.stderr)
+
     # Cleanup workspace
     if os.path.exists(workspace_dir):
         print(f"[{datetime.datetime.now().strftime('%T')}] [Blender Previews] Cleaning up preview workspace...")
         shutil.rmtree(workspace_dir, ignore_errors=True)
         
-    return updated_candidates
+    return updated_candidates, detected_materials

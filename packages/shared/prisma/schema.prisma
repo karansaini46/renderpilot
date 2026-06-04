@@ -180,6 +180,7 @@ model MaterialMapping {
   confidence       Float    @map("confidence")
   locked           Boolean  @default(false)
   correctionSource String?  @map("correction_source")
+  reason           String?  @map("reason")
   createdAt        DateTime @default(now()) @map("created_at")
   project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 

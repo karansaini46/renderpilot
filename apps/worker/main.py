@@ -350,6 +350,156 @@ def claim_job(conn, job_id=None):
     finally:
         cur.close()
 
+def detect_material_class(obj_name: str, mat_name: str, collections: list, base_color: list) -> tuple:
+    """
+    Analyzes object name, material name, collection names, and basic material color to detect
+    its category (glass, wall, floor, wood, metal, concrete, stone, vegetation, roof, frame, door, furniture),
+    returning (detected_class, confidence, reason).
+    """
+    obj_name_lower = obj_name.lower()
+    mat_name_lower = mat_name.lower()
+    collections_lower = [c.lower() for c in collections]
+    
+    # 1. Glass Rule
+    glass_kws = ["glass", "glaz", "pane", "mirror", "translucent", "glass_panel"]
+    if any(kw in mat_name_lower for kw in glass_kws):
+        return "glass", 0.90, f"Keyword match in material name '{mat_name}'"
+    if any(kw in obj_name_lower for kw in glass_kws):
+        return "glass", 0.80, f"Keyword match in object name '{obj_name}'"
+    if any(any(kw in col for kw in glass_kws) for col in collections_lower):
+        return "glass", 0.70, f"Keyword match in collection group"
+
+    # 2. Vegetation Rule
+    veg_kws = ["veg", "plant", "tree", "grass", "leaf", "leaves", "bush", "shrub", "flower", "garden", "foliage", "woodland"]
+    if any(kw in mat_name_lower for kw in veg_kws):
+        return "vegetation", 0.90, f"Keyword match in material name '{mat_name}'"
+    if any(kw in obj_name_lower for kw in veg_kws):
+        return "vegetation", 0.80, f"Keyword match in object name '{obj_name}'"
+    if any(any(kw in col for kw in veg_kws) for col in collections_lower):
+        return "vegetation", 0.70, f"Keyword match in collection group"
+    # Color signature
+    r, g, b = base_color[0], base_color[1], base_color[2]
+    if g > r * 1.3 and g > b * 1.3 and g > 0.15:
+        return "vegetation", 0.60, f"Color profile indicates vegetation (greenish hue: R={r:.2f}, G={g:.2f}, B={b:.2f})"
+
+    # 3. Door Rule
+    door_kws = ["door", "gate", "entrance", "portal", "threshold"]
+    if any(kw in mat_name_lower for kw in door_kws):
+        return "door", 0.90, f"Keyword match in material name '{mat_name}'"
+    if any(kw in obj_name_lower for kw in door_kws):
+        return "door", 0.80, f"Keyword match in object name '{obj_name}'"
+    if any(any(kw in col for kw in door_kws) for col in collections_lower):
+        return "door", 0.70, f"Keyword match in collection group"
+
+    # 4. Furniture Rule
+    furniture_kws = ["furniture", "chair", "table", "desk", "sofa", "couch", "bench", "cabinet", "shelf", "wardrobe", "bed", "stool", "cushion", "furnishing"]
+    if any(kw in mat_name_lower for kw in furniture_kws):
+        return "furniture", 0.90, f"Keyword match in material name '{mat_name}'"
+    if any(kw in obj_name_lower for kw in furniture_kws):
+        return "furniture", 0.80, f"Keyword match in object name '{obj_name}'"
+    if any(any(kw in col for kw in furniture_kws) for col in collections_lower):
+        return "furniture", 0.70, f"Keyword match in collection group"
+
+    # 5. Frame Rule
+    frame_kws = ["frame", "border", "mullion", "sash", "casing", "trim"]
+    if any(kw in mat_name_lower for kw in frame_kws):
+        return "frame", 0.90, f"Keyword match in material name '{mat_name}'"
+    if any(kw in obj_name_lower for kw in frame_kws):
+        return "frame", 0.80, f"Keyword match in object name '{obj_name}'"
+    if any(any(kw in col for kw in frame_kws) for col in collections_lower):
+        return "frame", 0.70, f"Keyword match in collection group"
+
+    # 6. Roof Rule
+    roof_kws = ["roof", "ceiling", "canopy", "shingle", "soffit", "rafter"]
+    if any(kw in mat_name_lower for kw in roof_kws):
+        return "roof", 0.90, f"Keyword match in material name '{mat_name}'"
+    if any(kw in obj_name_lower for kw in roof_kws):
+        return "roof", 0.80, f"Keyword match in object name '{obj_name}'"
+    if any(any(kw in col for kw in roof_kws) for col in collections_lower):
+        return "roof", 0.70, f"Keyword match in collection group"
+
+    # 7. Floor Rule
+    floor_kws = ["floor", "ground", "deck", "pave", "driveway", "terrace", "slab", "rug", "carpet", "tile_floor"]
+    if any(kw in mat_name_lower for kw in floor_kws):
+        return "floor", 0.90, f"Keyword match in material name '{mat_name}'"
+    if any(kw in obj_name_lower for kw in floor_kws):
+        return "floor", 0.80, f"Keyword match in object name '{obj_name}'"
+    if any(any(kw in col for kw in floor_kws) for col in collections_lower):
+        return "floor", 0.70, f"Keyword match in collection group"
+
+    # 8. Wood Rule
+    wood_kws = ["wood", "timber", "oak", "plank", "walnut", "pine", "teak", "maple", "cherry", "cedar", "mahogany", "lumber"]
+    if any(kw in mat_name_lower for kw in wood_kws):
+        return "wood", 0.90, f"Keyword match in material name '{mat_name}'"
+    if any(kw in obj_name_lower for kw in wood_kws):
+        return "wood", 0.80, f"Keyword match in object name '{obj_name}'"
+    if any(any(kw in col for kw in wood_kws) for col in collections_lower):
+        return "wood", 0.70, f"Keyword match in collection group"
+
+    # 9. Metal Rule
+    metal_kws = ["metal", "steel", "iron", "copper", "gold", "brass", "chrome", "alum", "silver", "bronze", "metallic", "zinc", "nickel"]
+    if any(kw in mat_name_lower for kw in metal_kws):
+        return "metal", 0.90, f"Keyword match in material name '{mat_name}'"
+    if any(kw in obj_name_lower for kw in metal_kws):
+        return "metal", 0.80, f"Keyword match in object name '{obj_name}'"
+    if any(any(kw in col for kw in metal_kws) for col in collections_lower):
+        return "metal", 0.70, f"Keyword match in collection group"
+
+    # 10. Concrete Rule
+    concrete_kws = ["concrete", "cement", "mortar", "microcement", "stucco"]
+    if any(kw in mat_name_lower for kw in concrete_kws):
+        return "concrete", 0.90, f"Keyword match in material name '{mat_name}'"
+    if any(kw in obj_name_lower for kw in concrete_kws):
+        return "concrete", 0.80, f"Keyword match in object name '{obj_name}'"
+    if any(any(kw in col for kw in concrete_kws) for col in collections_lower):
+        return "concrete", 0.70, f"Keyword match in collection group"
+
+    # 11. Stone Rule
+    stone_kws = ["stone", "marble", "granite", "rock", "slate", "brick", "masonry", "travertine", "limestone", "terrazzo", "sandstone"]
+    if any(kw in mat_name_lower for kw in stone_kws):
+        return "stone", 0.90, f"Keyword match in material name '{mat_name}'"
+    if any(kw in obj_name_lower for kw in stone_kws):
+        return "stone", 0.80, f"Keyword match in object name '{obj_name}'"
+    if any(any(kw in col for kw in stone_kws) for col in collections_lower):
+        return "stone", 0.70, f"Keyword match in collection group"
+
+    # 12. Wall Rule
+    wall_kws = ["wall", "partition", "facade", "siding", "cladding", "plaster", "drywall"]
+    if any(kw in mat_name_lower for kw in wall_kws):
+        return "wall", 0.90, f"Keyword match in material name '{mat_name}'"
+    if any(kw in obj_name_lower for kw in wall_kws):
+        return "wall", 0.80, f"Keyword match in object name '{obj_name}'"
+    if any(any(kw in col for kw in wall_kws) for col in collections_lower):
+        return "wall", 0.70, f"Keyword match in collection group"
+
+    # Fallback to Wall if its name matches typical structural keywords
+    if "facade" in obj_name_lower or "structure" in obj_name_lower:
+        return "wall", 0.50, f"Structural keyword fallback in object name '{obj_name}'"
+
+    # Default fallback guess
+    return "wall", 0.20, f"Default fallback classification (no keywords matched)"
+
+def get_default_finish(detected_class: str, mat_name: str) -> str:
+    if mat_name and not mat_name.lower().startswith("material"):
+        cleaned = mat_name.replace("_", " ").replace(".", " ").strip()
+        return cleaned.title()
+        
+    defaults = {
+        "glass": "Clear Glass",
+        "wall": "Matte Wall Paint",
+        "floor": "Polished Floor Finish",
+        "wood": "Natural Oak Wood",
+        "metal": "Brushed Steel",
+        "concrete": "Exposed Concrete",
+        "stone": "Textured Stone Masonry",
+        "vegetation": "Lush Green Vegetation",
+        "roof": "Standard Roof Material",
+        "frame": "Dark Window Frame Finish",
+        "door": "Solid Door Finish",
+        "furniture": "Standard Furniture Finish"
+    }
+    return defaults.get(detected_class, "Standard Finish")
+
 def process_job(conn, job):
     """
     Validates job settings against capacity guardrails, applies downshift
@@ -444,8 +594,47 @@ def process_job(conn, job):
                 cur.execute("UPDATE render_jobs SET progress = 20 WHERE id = %s;", (job_id,))
                 conn.commit()
                 
-                candidates = run_camera_preview_pipeline(job_id, project_id, user_id, local_blend_path)
+                candidates, detected_materials = run_camera_preview_pipeline(job_id, project_id, user_id, local_blend_path)
                 
+                if detected_materials:
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Analyzing {len(detected_materials)} scene materials...")
+                    for item in detected_materials:
+                        obj_name = item.get("object_name", "")
+                        mat_name = item.get("material_name", "")
+                        collections = item.get("collections", [])
+                        base_color = item.get("base_color", [1.0, 1.0, 1.0, 1.0])
+                        
+                        detected_class, confidence, reason = detect_material_class(
+                            obj_name, mat_name, collections, base_color
+                        )
+                        
+                        selected_material = get_default_finish(detected_class, mat_name)
+                        
+                        # Check if a user mapping for this objectName already exists and is locked.
+                        cur.execute("""
+                            SELECT id, locked FROM material_mappings 
+                            WHERE project_id = %s AND object_name = %s LIMIT 1;
+                        """, (project_id, obj_name))
+                        existing = cur.fetchone()
+                        
+                        if existing:
+                            mapping_id, locked = existing
+                            if not locked:
+                                cur.execute("""
+                                    UPDATE material_mappings
+                                    SET detected_class = %s, selected_material = %s, confidence = %s, reason = %s, correction_source = 'heuristic'
+                                    WHERE id = %s;
+                                """, (detected_class, selected_material, confidence, reason, mapping_id))
+                        else:
+                            mapping_id = f"mm_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                            cur.execute("""
+                                INSERT INTO material_mappings (id, project_id, object_name, detected_class, selected_material, confidence, locked, correction_source, reason)
+                                VALUES (%s, %s, %s, %s, %s, %s, FALSE, 'heuristic', %s);
+                            """, (mapping_id, project_id, obj_name, detected_class, selected_material, confidence, reason))
+                    
+                    conn.commit()
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Successfully saved material mapping guesses to database.")
+
                 # Update settings_json in the DB with the candidates
                 settings["camera_candidates"] = candidates
                 updated_settings_json = json.dumps(settings)

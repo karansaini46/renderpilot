@@ -103,7 +103,8 @@ export async function POST(
 
     const validCategories = [
       'wall', 'floor', 'ceiling', 'glass', 'frame', 'wood', 
-      'stone', 'concrete', 'metal', 'vegetation', 'furniture', 'sky'
+      'stone', 'concrete', 'metal', 'vegetation', 'furniture', 'sky',
+      'roof', 'door'
     ];
 
     if (!validCategories.includes(detectedClass.toLowerCase().trim())) {
@@ -123,7 +124,8 @@ export async function POST(
         selectedMaterial: selectedMaterial.trim(),
         locked: !!locked,
         confidence: 1.0,
-        correctionSource: 'user'
+        correctionSource: 'user',
+        reason: 'User-defined mapping'
       },
       create: {
         id: targetId,
@@ -133,7 +135,8 @@ export async function POST(
         selectedMaterial: selectedMaterial.trim(),
         locked: !!locked,
         confidence: 1.0,
-        correctionSource: 'user'
+        correctionSource: 'user',
+        reason: 'User-defined mapping'
       }
     });
 
