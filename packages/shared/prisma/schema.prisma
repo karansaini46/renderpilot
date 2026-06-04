@@ -41,6 +41,7 @@ model Project {
   renders          Render[]
   materialMappings MaterialMapping[]
   revisionNotes    RevisionNote[]
+  deliveries       Delivery[]
 
   @@map("projects")
   @@index([createdAt])
@@ -150,6 +151,7 @@ model Render {
   feedback        RenderFeedback?
   preferenceMemory PreferenceMemory[]
   trainingSamples TrainingSample[]
+  deliveryComments DeliveryComment[]
 
   @@map("renders")
   @@index([projectId])
@@ -312,5 +314,36 @@ model MaterialMemory {
   @@map("material_memory")
   @@index([projectType, sceneType, stylePreference])
   @@index([createdAt])
+}
+
+// 16. Client Deliveries model
+model Delivery {
+  id              String            @id
+  projectId       String            @map("project_id")
+  token           String            @unique
+  password        String?
+  commentsEnabled Boolean           @default(true) @map("comments_enabled")
+  rendersJson     String            @map("renders_json")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @default(now()) @updatedAt @map("updated_at")
+  project         Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  comments        DeliveryComment[]
+
+  @@map("deliveries")
+}
+
+// 17. Delivery Comments model
+model DeliveryComment {
+  id         String   @id
+  deliveryId String   @map("delivery_id")
+  renderId   String?  @map("render_id")
+  author     String
+  text       String
+  createdAt  DateTime @default(now()) @map("created_at")
+  delivery   Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  render     Render?  @relation(fields: [renderId], references: [id], onDelete: SetNull)
+
+  @@map("delivery_comments")
+  @@index([deliveryId])
 }
 
