@@ -236,18 +236,22 @@ def recover_stale_jobs(conn):
     try:
         cur.execute("BEGIN;")
         stale_threshold = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=30)
+        # Use a subquery to avoid "FOR UPDATE cannot be applied to the nullable side of an outer join"
         cur.execute("""
             SELECT r.id, r.retry_count, r.max_retries, r.worker_id
             FROM render_jobs r
-            LEFT JOIN workers w ON r.worker_id = w.id
             WHERE r.status IN ('claimed', 'processing')
               AND (
-                w.id IS NULL 
-                OR w.status = 'offline' 
-                OR w.last_heartbeat < %s
-                OR w.last_heartbeat IS NULL
+                r.worker_id IS NULL
+                OR NOT EXISTS (
+                    SELECT 1 FROM workers w
+                    WHERE w.id = r.worker_id
+                      AND w.status != 'offline'
+                      AND w.last_heartbeat IS NOT NULL
+                      AND w.last_heartbeat >= %s
+                )
               )
-            FOR UPDATE;
+            FOR UPDATE SKIP LOCKED;
         """, (stale_threshold,))
         stale_jobs = cur.fetchall()
         
