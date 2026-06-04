@@ -42,6 +42,7 @@ model Project {
   materialMappings MaterialMapping[]
   revisionNotes    RevisionNote[]
   deliveries       Delivery[]
+  promptBrainAnalyses PromptBrainAnalysis[]
 
   @@map("projects")
   @@index([createdAt])
@@ -56,6 +57,7 @@ model ProjectFile {
   metadataJson String?  @default("{}") @map("metadata_json")
   createdAt    DateTime @default(now()) @map("created_at")
   project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  promptBrainAnalyses PromptBrainAnalysis[]
 
   @@map("project_files")
   @@index([projectId])
@@ -346,4 +348,33 @@ model DeliveryComment {
   @@map("delivery_comments")
   @@index([deliveryId])
 }
+
+// 18. PromptBrain Analyses model
+model PromptBrainAnalysis {
+  id                 String       @id
+  projectId          String       @map("project_id")
+  projectFileId      String?      @map("project_file_id")
+  provider           String
+  model              String
+  sceneType          String?      @map("scene_type")
+  confidence         Float?
+  analysisJson       String       @default("{}") @map("analysis_json")
+  positivePrompt     String?      @map("positive_prompt")
+  negativePrompt     String?      @map("negative_prompt")
+  renderMode         String?      @map("render_mode")
+  denoise            Float?
+  geometryLockMode   String?      @map("geometry_lock_mode")
+  cacheKey           String?      @map("cache_key")
+  createdAt          DateTime     @default(now()) @map("created_at")
+
+  project            Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectFile        ProjectFile? @relation(fields: [projectFileId], references: [id], onDelete: SetNull)
+
+  @@map("prompt_brain_analyses")
+  @@index([projectId])
+  @@index([projectFileId])
+  @@index([cacheKey])
+  @@index([createdAt])
+}
+
 
