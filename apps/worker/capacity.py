@@ -18,7 +18,7 @@ LAPTOP_PROFILE = {
     "max_resolution": 768,
     "max_steps": 25,
     "default_cfg": 8.0,
-    "default_sampler": "dpm_2m",
+    "default_sampler": "dpmpp_2m",
     "default_scheduler": "karras",
     "max_variations_per_job": 4,
     "sequential_variations": True,

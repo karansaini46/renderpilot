@@ -358,8 +358,7 @@ class ComfyUIClient:
                 if 'steps' in inputs:
                     inputs['steps'] = steps
                 inputs['cfg'] = cfg_scale if cfg_scale is not None else 8.0
-                sampler = "dpm_2m"
-                inputs['sampler_name'] = "dpmpp_2m" if sampler == "dpm_2m" else sampler
+                inputs['sampler_name'] = "dpmpp_2m"
                 inputs['scheduler'] = "karras"
                 if 'denoise' in inputs:
                     inputs['denoise'] = mapped_denoise
