@@ -92,7 +92,6 @@ class ComfyUIClient:
             queue_resp.raise_for_status()
 
             return stats
-
         except requests.exceptions.ConnectionError:
             raise ComfyUIConnectionError(
                 f"[ComfyUI Offline] Cannot connect to ComfyUI at {self.base_url}. "
@@ -113,6 +112,21 @@ class ComfyUIClient:
             raise ComfyUIConnectionError(
                 f"[ComfyUI Error] Unexpected error checking ComfyUI health: {e}"
             )
+
+    def check_controlnet_available(self, model_name: str) -> bool:
+        """
+        Queries ComfyUI to check if a specific ControlNet model is available.
+        """
+        try:
+            resp = requests.get(f"{self.base_url}/object_info/ControlNetLoader", timeout=5)
+            if resp.ok:
+                data = resp.json()
+                models = data.get("ControlNetLoader", {}).get("input", {}).get("required", {}).get("control_net_name", [])[0]
+                if models and model_name in models:
+                    return True
+            return False
+        except Exception:
+            return False
 
     def is_healthy(self) -> bool:
         """Returns True if ComfyUI is reachable and responsive, False otherwise."""
@@ -267,7 +281,23 @@ class ComfyUIClient:
         # Log final parameters
         print(f"[ComfyUI Client] Final parameters: denoise={final_denoise}, geometryLockMode={mode}, control_strength={control_strength}, edge_strength={final_edge_strength}, depth_strength={final_depth_strength}, promptBrainProvider={prompt_brain_provider}")
 
-        for node_id, node in workflow.items():
+        # Check ControlNet model availability
+        controlnet_ok = self.check_controlnet_available("control_v11p_sd15_canny.pth")
+        if not controlnet_ok:
+            print("[ControlNet] WARNING: control_v11p_sd15_canny.pth not found in ComfyUI. Skipping ControlNet — renders will ignore scene structure.", file=sys.stderr)
+            # Remove controlnet nodes from workflow and redirect KSampler inputs
+            for nid in ["10", "11", "12"]:
+                if nid in workflow:
+                    del workflow[nid]
+            for node in workflow.values():
+                if node.get("class_type") in ("KSampler", "KSamplerAdvanced"):
+                    inputs = node.get("inputs", {})
+                    if 'positive' in inputs:
+                        inputs['positive'] = ["6", 0]
+                    if 'negative' in inputs:
+                        inputs['negative'] = ["7", 0]
+
+        for node_id, node in list(workflow.items()):
             class_type = node.get('class_type', '')
             inputs = node.get('inputs', {})
 
@@ -292,6 +322,11 @@ class ComfyUIClient:
                         inputs['strength'] = final_depth_strength
                     else:
                         inputs['strength'] = control_strength
+
+            # ControlNetLoader node — inject controlnet model name
+            if class_type == 'ControlNetLoader':
+                if 'control_net_name' in inputs:
+                    inputs['control_net_name'] = "control_v11p_sd15_canny.pth"
 
             # CLIP Text Encode nodes — inject prompts with constraints
             # Convention: node title or _meta.title containing "negative" gets negative prompt
