@@ -126,13 +126,13 @@
     }
   },
   "16": {
-    "class_type": "VAETilingDecode",
+    "class_type": "VAEDecode",
     "inputs": {
       "samples": ["3", 0],
       "vae": ["4", 2]
     },
     "_meta": {
-      "title": "VAE Tiling Decode"
+      "title": "VAE Decode"
     }
   },
   "9": {

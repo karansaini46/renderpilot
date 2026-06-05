@@ -395,6 +395,18 @@ class ComfyUIClient:
                 if 'filename_prefix' in inputs and output_folder:
                     inputs['filename_prefix'] = output_folder
 
+        # Attempt to upgrade VAEDecode → VAETilingDecode for OOM protection on 4GB VRAM
+        try:
+            resp = requests.get(f"{self.base_url}/object_info/VAETilingDecode", timeout=3)
+            if resp.ok and 'VAETilingDecode' in resp.json():
+                for node_id, node in workflow.items():
+                    if node.get('class_type') == 'VAEDecode':
+                        node['class_type'] = 'VAETilingDecode'
+                        node.setdefault('_meta', {})['title'] = 'VAE Tiling Decode'
+                        print("[ComfyUI Client] Upgraded VAEDecode -> VAETilingDecode (OOM protection for 4GB VRAM)")
+        except Exception:
+            pass  # VAETilingDecode not available, keep VAEDecode
+
         return workflow
 
     def upload_image(self, local_path: str) -> str:
