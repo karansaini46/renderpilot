@@ -11,15 +11,16 @@ dns.lookup = function (hostname, options, callback) {
     opt = {};
   }
   if (hostname === 'ep-fancy-river-apb2phrc-pooler.c-7.us-east-1.aws.neon.tech') {
-    const family = (opt && opt.family) || 4;
+    const family = (typeof opt === 'number' ? opt : (opt as any)?.family) || 4;
+    const isAll = typeof opt === 'object' && opt !== null && (opt as any).all;
     if (family !== 6) {
-      if (opt && opt.all) {
-        return cb(null, [{ address: '52.4.160.253', family: 4 }]);
+      if (isAll) {
+        return (cb as any)(null, [{ address: '52.4.160.253', family: 4 }]);
       }
-      return cb(null, '52.4.160.253', 4);
+      return (cb as any)(null, '52.4.160.253', 4);
     }
   }
-  return originalLookup(hostname, opt, cb);
+  return originalLookup(hostname, opt as any, cb as any);
 };
 
 const globalForPrisma = global as unknown as { prisma: PrismaClient };
