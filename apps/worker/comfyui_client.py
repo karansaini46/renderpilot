@@ -195,7 +195,7 @@ class ComfyUIClient:
         width: int = 512,
         height: int = 512,
         steps: int = 20,
-        cfg_scale: float = 7.0,
+        cfg_scale: float = 8.0,
         denoise: float | None = None,
         geometry_lock_mode: str = 'accurate',
         control_image: str | None = "NOT_PROVIDED",
@@ -230,51 +230,63 @@ class ComfyUIClient:
         """
         # Map geometry lock mode to ComfyUI variables
         # Dual ControlNet strength profiles: (depth_strength, canny_strength)
-        mode = (geometry_lock_mode or 'strict_structure').lower()
-        control_strength = 0.9
-        mode_depth_strength = 0.75
-        mode_canny_strength = 0.45
-        prompt_constraint = ""
+        mode = (geometry_lock_mode or 'accurate').lower()
 
+        control_strength_map = {
+            'creative': 0.40,
+            'balanced': 0.60,
+            'accurate': 0.75,
+            'technical': 0.92,
+            # Legacy fallbacks:
+            'creative_concept': 0.35,
+            'balanced_enhancement': 0.55,
+            'strict_structure': 0.90,
+            'faithful': 0.90
+        }
+
+        canny_strength_map = {
+            'creative': 0.20,
+            'balanced': 0.35,
+            'accurate': 0.45,
+            'technical': 0.60,
+            # Legacy fallbacks:
+            'creative_concept': 0.25,
+            'balanced_enhancement': 0.38,
+            'strict_structure': 0.60,
+            'faithful': 0.60
+        }
+
+        mode_depth_strength = control_strength_map.get(mode, 0.75)
+        mode_canny_strength = canny_strength_map.get(mode, 0.45)
+        
+        generic_strength_map = {
+            'creative': 0.40,
+            'creative_concept': 0.40,
+            'balanced': 0.70,
+            'balanced_enhancement': 0.75,
+            'accurate': 0.90,
+            'technical': 1.0,
+            'strict_structure': 1.0,
+            'faithful': 1.0
+        }
+        control_strength = generic_strength_map.get(mode, 0.90)
+
+        prompt_constraint = ""
         if mode == 'strict_structure':
-            control_strength = 1.0
-            mode_depth_strength = 0.90
-            mode_canny_strength = 0.60
             prompt_constraint = "photorealistic architectural render optimization, realistic materials, natural lighting, accurate shadows, glass reflections, realistic texture detail, professional archviz polish, same building geometry, same camera composition"
         elif mode == 'balanced_enhancement':
-            control_strength = 0.75
-            mode_depth_strength = 0.55
-            mode_canny_strength = 0.38
             prompt_constraint = "preserves composition, balanced style changes"
         elif mode == 'creative_concept':
-            control_strength = 0.40
-            mode_depth_strength = 0.35
-            mode_canny_strength = 0.25
             prompt_constraint = "more visual freedom, creative details, concept rendering"
         elif mode == 'creative':
-            control_strength = 0.4
-            mode_depth_strength = 0.35
-            mode_canny_strength = 0.25
             prompt_constraint = "more visual freedom, creative details"
         elif mode == 'balanced':
-            control_strength = 0.7
-            mode_depth_strength = 0.55
-            mode_canny_strength = 0.38
             prompt_constraint = "preserves composition, balanced style changes"
         elif mode == 'accurate':
-            control_strength = 0.9
-            mode_depth_strength = 0.75
-            mode_canny_strength = 0.45
             prompt_constraint = "strict composition preservation, realistic structure, client-ready layout"
         elif mode in ('technical', 'faithful'):
-            control_strength = 1.0
-            mode_depth_strength = 0.90
-            mode_canny_strength = 0.60
             prompt_constraint = "strongest preservation of contours, exact geometry, technical blueprint match"
         else:
-            control_strength = 1.0
-            mode_depth_strength = 0.90
-            mode_canny_strength = 0.60
             prompt_constraint = "photorealistic architectural render optimization, realistic materials, natural lighting, accurate shadows, glass reflections, realistic texture detail, professional archviz polish, same building geometry, same camera composition"
 
         # Resolve edge and depth control strengths from per-mode defaults
@@ -345,8 +357,9 @@ class ComfyUIClient:
                     inputs['seed'] = seed
                 if 'steps' in inputs:
                     inputs['steps'] = steps
-                if 'cfg' in inputs:
-                    inputs['cfg'] = cfg_scale
+                inputs['cfg'] = cfg_scale if cfg_scale is not None else 8.0
+                inputs['sampler_name'] = "dpmpp_2m"
+                inputs['scheduler'] = "karras"
                 if 'denoise' in inputs:
                     inputs['denoise'] = mapped_denoise
 
@@ -754,7 +767,7 @@ class ComfyUIClient:
         width: int = 512,
         height: int = 512,
         steps: int = 20,
-        cfg_scale: float = 7.0,
+        cfg_scale: float = 8.0,
         denoise: float = 0.50,
         geometry_lock_mode: str = 'accurate',
         control_image: str | None = None,

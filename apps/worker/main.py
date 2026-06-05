@@ -1262,7 +1262,7 @@ def process_job(conn, job):
                 variations = max_vars
             
         steps = clamped_settings.get("steps", 20)
-        cfg_scale = clamped_settings.get("cfg_scale", 7.0)
+        cfg_scale = clamped_settings.get("cfg_scale", 8.0)
         
         if not is_upscale:
             # Resolve geometry lock mode and render mode
@@ -1271,12 +1271,17 @@ def process_job(conn, job):
             # Use safe defaults only when denoise is missing
             denoise = clamped_settings.get("denoise")
             if denoise is None:
-                if geometry_lock_mode == "creative_concept" or geometry_lock_mode == "creative":
-                    denoise = 0.65
-                elif geometry_lock_mode == "balanced_enhancement" or geometry_lock_mode == "balanced":
-                    denoise = 0.40
-                else:  # strict_structure or default
-                    denoise = 0.25
+                mode_denoise_map = {
+                    "creative": 0.80,
+                    "creative_concept": 0.80,
+                    "balanced": 0.65,
+                    "balanced_enhancement": 0.65,
+                    "accurate": 0.60,
+                    "technical": 0.35,
+                    "strict_structure": 0.35,
+                    "faithful": 0.35
+                }
+                denoise = mode_denoise_map.get(geometry_lock_mode, 0.60)
                 
             clamped_settings["denoise"] = denoise
             clamped_settings["geometryLockMode"] = geometry_lock_mode

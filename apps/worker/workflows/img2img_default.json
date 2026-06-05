@@ -1,148 +1,16 @@
 {
-  "1": {
-    "class_type": "LoadImage",
-    "inputs": {
-      "image": "input.png"
-    },
-    "_meta": {
-      "title": "Load Input Image"
-    }
-  },
-  "2": {
-    "class_type": "VAEEncode",
-    "inputs": {
-      "pixels": ["1", 0],
-      "vae": ["4", 2]
-    },
-    "_meta": {
-      "title": "VAE Encode"
-    }
-  },
-  "4": {
-    "class_type": "CheckpointLoaderSimple",
-    "inputs": {
-      "ckpt_name": "realisticVisionV60B1_v60B1VAE.safetensors"
-    },
-    "_meta": {
-      "title": "Load Checkpoint"
-    }
-  },
-  "6": {
-    "class_type": "CLIPTextEncode",
-    "inputs": {
-      "clip": ["4", 1],
-      "text": "high quality architectural rendering, photorealistic, natural lighting, detailed materials"
-    },
-    "_meta": {
-      "title": "Positive Prompt"
-    }
-  },
-  "7": {
-    "class_type": "CLIPTextEncode",
-    "inputs": {
-      "clip": ["4", 1],
-      "text": "cartoon, blurry, watermark, bad geometry, floating elements, oversaturated, lens distortion"
-    },
-    "_meta": {
-      "title": "Negative Prompt"
-    }
-  },
-  "10": {
-    "class_type": "ControlNetLoader",
-    "inputs": {
-      "control_net_name": "control_v11f1p_sd15_depth.pth"
-    },
-    "_meta": {
-      "title": "Load ControlNet Depth Model"
-    }
-  },
-  "11": {
-    "class_type": "LoadImage",
-    "inputs": {
-      "image": "depth_input.png"
-    },
-    "_meta": {
-      "title": "Load Depth Control Image"
-    }
-  },
-  "12": {
-    "class_type": "ControlNetApply",
-    "inputs": {
-      "conditioning": ["6", 0],
-      "control_net": ["10", 0],
-      "image": ["11", 0],
-      "strength": 0.75
-    },
-    "_meta": {
-      "title": "Apply ControlNet (Depth)"
-    }
-  },
-  "13": {
-    "class_type": "ControlNetLoader",
-    "inputs": {
-      "control_net_name": "control_v11p_sd15_canny.pth"
-    },
-    "_meta": {
-      "title": "Load ControlNet Canny Model"
-    }
-  },
-  "14": {
-    "class_type": "LoadImage",
-    "inputs": {
-      "image": "canny_input.png"
-    },
-    "_meta": {
-      "title": "Load Canny Control Image"
-    }
-  },
-  "15": {
-    "class_type": "ControlNetApply",
-    "inputs": {
-      "conditioning": ["12", 0],
-      "control_net": ["13", 0],
-      "image": ["14", 0],
-      "strength": 0.45
-    },
-    "_meta": {
-      "title": "Apply ControlNet (Canny)"
-    }
-  },
-  "3": {
-    "class_type": "KSampler",
-    "inputs": {
-      "cfg": 7.0,
-      "denoise": 0.50,
-      "latent_image": ["2", 0],
-      "model": ["4", 0],
-      "negative": ["7", 0],
-      "positive": ["15", 0],
-      "sampler_name": "dpmpp_2m",
-      "scheduler": "karras",
-      "seed": 42,
-      "steps": 20
-    },
-    "_meta": {
-      "title": "KSampler"
-    }
-  },
-  "16": {
-    "class_type": "VAEDecode",
-    "inputs": {
-      "samples": ["3", 0],
-      "vae": ["4", 2]
-    },
-    "_meta": {
-      "title": "VAE Decode"
-    }
-  },
-  "9": {
-    "class_type": "SaveImage",
-    "inputs": {
-      "filename_prefix": "RenderPilot",
-      "images": ["16", 0]
-    },
-    "_meta": {
-      "title": "Save Image"
-    }
-  }
+  "1": { "class_type": "LoadImage", "inputs": { "image": "input.png" }, "_meta": { "title": "Load Input Image" } },
+  "2": { "class_type": "VAEEncode", "inputs": { "pixels": ["1", 0], "vae": ["4", 2] }, "_meta": { "title": "VAE Encode" } },
+  "4": { "class_type": "CheckpointLoaderSimple", "inputs": { "ckpt_name": "realisticVisionV60B1_v60B1VAE.safetensors" }, "_meta": { "title": "Load Checkpoint" } },
+  "6": { "class_type": "CLIPTextEncode", "inputs": { "clip": ["4", 1], "text": "placeholder positive" }, "_meta": { "title": "Positive Prompt" } },
+  "7": { "class_type": "CLIPTextEncode", "inputs": { "clip": ["4", 1], "text": "placeholder negative" }, "_meta": { "title": "Negative Prompt" } },
+  "10": { "class_type": "ControlNetLoader", "inputs": { "control_net_name": "control_v11f1p_sd15_depth.pth" }, "_meta": { "title": "Load Depth ControlNet" } },
+  "11": { "class_type": "LoadImage", "inputs": { "image": "depth_input.png" }, "_meta": { "title": "Load Depth Control Image" } },
+  "12": { "class_type": "ControlNetApply", "inputs": { "conditioning": ["6", 0], "control_net": ["10", 0], "image": ["11", 0], "strength": 0.75 }, "_meta": { "title": "Apply Depth ControlNet" } },
+  "13": { "class_type": "ControlNetLoader", "inputs": { "control_net_name": "control_v11p_sd15_canny.pth" }, "_meta": { "title": "Load Canny ControlNet" } },
+  "14": { "class_type": "LoadImage", "inputs": { "image": "canny_input.png" }, "_meta": { "title": "Load Canny Control Image" } },
+  "15": { "class_type": "ControlNetApply", "inputs": { "conditioning": ["12", 0], "control_net": ["13", 0], "image": ["14", 0], "strength": 0.45 }, "_meta": { "title": "Apply Canny ControlNet" } },
+  "3": { "class_type": "KSampler", "inputs": { "model": ["4", 0], "positive": ["15", 0], "negative": ["7", 0], "latent_image": ["2", 0], "seed": 42, "steps": 22, "cfg": 8.0, "sampler_name": "dpm_2m_karras", "scheduler": "karras", "denoise": 0.60 }, "_meta": { "title": "KSampler" } },
+  "8": { "class_type": "VAEDecode", "inputs": { "samples": ["3", 0], "vae": ["4", 2] }, "_meta": { "title": "VAE Decode" } },
+  "9": { "class_type": "SaveImage", "inputs": { "filename_prefix": "RenderPilot", "images": ["8", 0] }, "_meta": { "title": "Save Image" } }
 }

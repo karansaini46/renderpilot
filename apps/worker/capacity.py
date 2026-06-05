@@ -15,12 +15,16 @@ import copy
 LAPTOP_PROFILE = {
     "max_concurrent_jobs": 1,
     "max_preview_resolution": 768,
+    "max_resolution": 768,
     "max_steps": 25,
+    "default_cfg": 8.0,
+    "default_sampler": "dpm_2m_karras",
+    "default_scheduler": "karras",
     "max_variations_per_job": 4,
     "sequential_variations": True,
     "sdxl_enabled": False,
     "video_enabled": False,
-    "parallel_comfyui_jobs": False,
+    "parallel_comfyui_jobs": 1,
     "upscale_approved_only": True,
 }
 

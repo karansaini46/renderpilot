@@ -40,170 +40,30 @@ export interface PromptBrainProviderResult {
   providerUnavailable?: boolean;
 }
 
-const MASTER_INSTRUCTION = `
-You are RenderPilot's PromptBrain. Analyze the provided architectural visualization image and return a JSON object conforming exactly to the following TypeScript interface structure.
-Do NOT include any markdown, triple backticks (e.g. \`\`\`json), or text outside the JSON object.
+const MASTER_INSTRUCTION = `You are an expert architectural visualization prompt engineer for Stable Diffusion 1.5 with Realistic Vision V6.
 
-CRITICAL — SD 1.5 PROMPT RULES (CLIP limit = 75 tokens):
-- positive_prompt_draft MUST be under 75 tokens. Shorter is better.
-- Start with the most important descriptor first.
-- Format: "{material} {surface_quality}, {lighting}, {atmosphere}, architectural photography"
-- Example: "exposed concrete facade, rough texture, golden hour side light, sharp shadows, architectural photography"
-- Do NOT use SDXL-style verbose descriptors, long sentences, or comma-separated adjective chains.
-- Keep it compact: material > surface > light > mood > "architectural photography"
-- negative_prompt_draft MUST always include: "cartoon, blurry, watermark, bad geometry, floating elements, oversaturated, lens distortion"
-- You may append additional negative terms relevant to the scene, but keep the total under 40 tokens.
+Analyze the uploaded architectural image and generate render prompts. Follow these rules strictly:
 
-interface CameraView {
-  angle: string;
-  elevation: string;
-  focalLength?: string;
-  description: string;
-}
+POSITIVE PROMPT RULES:
+- Max 70 tokens total (hard limit — SD 1.5 CLIP truncates at 75)
+- Always start with: (RAW photo:1.2), (photorealistic:1.4),
+- Include material descriptors with physical properties — NOT generic terms:
+  BAD: 'concrete walls'
+  GOOD: 'rough exposed concrete, visible aggregate texture, matte finish'
+- Include one lighting descriptor: golden hour, overcast diffuse, harsh midday, blue hour twilight, interior ambient
+- Include one camera reference: architectural photography, Canon EOS R5, 24mm wide angle, eye level shot
+- Include atmosphere: sharp shadows, volumetric light, clear sky, morning haze
+- Format: (RAW photo:1.2), (photorealistic:1.4), [materials], [lighting], [atmosphere], architectural photography, 8k uhd, sharp focus
 
-interface MajorObject {
-  name: string;
-  category: string;
-  description?: string;
-}
+NEGATIVE PROMPT RULES (always use exactly this):
+(worst quality:1.4), (low quality:1.4), cartoon, illustration, painting, sketch, anime, 3d render artifact, floating geometry, misaligned structure, distorted perspective, watermark, blurry, oversaturated, plastic texture, lens distortion, bad proportions, extra floors, missing windows
 
-interface ObjectPriority {
-  objectName: string;
-  priority: 'low' | 'medium' | 'high';
-  reason: string;
-}
-
-interface CompositionLock {
-  description: string;
-  lockAspects: string[];
-  riskLevel: 'low' | 'medium' | 'high';
-}
-
-interface MaterialMappingSuggestion {
-  objectName: string;
-  category: 'wall' | 'floor' | 'ceiling' | 'glass' | 'frame' | 'wood' | 'stone' | 'concrete' | 'metal' | 'vegetation' | 'furniture' | 'sky' | 'roof' | 'door';
-  suggestedMaterial: string;
-  confidence: number;
-}
-
-interface TextureAnalysis {
-  description: string;
-  dominantPatterns: string[];
-}
-
-interface SurfaceBehavior {
-  glossiness: string;
-  roughness: string;
-  metallic: string;
-  details: string;
-}
-
-interface InteriorLightAnalysis {
-  lightSources: string[];
-  dominantColorTemp: string;
-  intensity: 'low' | 'medium' | 'high';
-  description: string;
-}
-
-interface ExteriorLightAnalysis {
-  sunPosition: string;
-  timeOfDay: string;
-  weatherCondition: string;
-  shadowSharpness: string;
-  description: string;
-}
-
-interface MirrorAnalysis {
-  detected: boolean;
-  count: number;
-  surfaceAreaEstimated: string;
-  description: string;
-}
-
-interface GlassAnalysis {
-  detected: boolean;
-  transparencyLevel: string;
-  reflectionLevel: string;
-  description: string;
-}
-
-interface ReflectionGuidance {
-  promptTriggers: string[];
-  renderSettingsAdjustment: string;
-}
-
-interface RoomTypeProtection {
-  roomType: string;
-  protectedElements: string[];
-  forbiddenSubstitutions: string[];
-}
-
-interface GeometryRisk {
-  element: string;
-  riskType: string;
-  mitigation: string;
-}
-
-interface StyleSafety {
-  styleIncompatibilities: string[];
-  promptSafetyFlags: string[];
-}
-
-interface InputQuality {
-  resolutionCheck: string;
-  compressionArtifacts: boolean;
-  blurriness: 'none' | 'low' | 'medium' | 'high';
-  score: number;
-}
-
-interface WorkflowRecommendation {
-  pipeline: string;
-  steps: string[];
-  reason: string;
-}
-
-interface DetailEnhancementPlan {
-  steps: string[];
-  targetAreas: string[];
-}
-
-interface PromptBrainSchema {
-  scene_type: 'Exterior' | 'Interior' | 'Aerial Studio' | 'Macro Detail';
-  confidence: number;
-  camera_view: CameraView;
-  major_objects: MajorObject[];
-  object_priority: ObjectPriority[];
-  composition_lock: CompositionLock;
-  materials: string[];
-  material_mappings: MaterialMappingSuggestion[];
-  texture_analysis: TextureAnalysis;
-  surface_behavior: SurfaceBehavior;
-  interior_light_analysis: InteriorLightAnalysis;
-  exterior_light_analysis: ExteriorLightAnalysis;
-  mirror_analysis: MirrorAnalysis;
-  glass_analysis: GlassAnalysis;
-  reflection_guidance: ReflectionGuidance;
-  room_type_protection: RoomTypeProtection;
-  geometry_risks: GeometryRisk[];
-  style_safety: StyleSafety;
-  input_quality: InputQuality;
-  workflow_recommendation: WorkflowRecommendation;
-  preserve_constraints: string[];
-  forbidden_changes: string[];
-  detail_enhancement_plan: DetailEnhancementPlan;
-  suggested_render_mode: 'base_render_model' | 'img2img' | 'upscale_selected';
-  suggested_denoise: number;
-  suggested_geometry_lock: 'creative' | 'balanced' | 'accurate' | 'technical';
-  positive_prompt_draft: string;
-  negative_prompt_draft: string;
-  risk_flags: string[];
-  success_criteria: string[];
-  user_summary: string;
-}
-
-Provide highly descriptive analysis details mapping exactly to the architectural layout, textures, materials, and lighting characteristics seen in the image.
-Remember: positive_prompt_draft must be SD 1.5 optimized — max 75 tokens, material-first, compact format.
-`;
+OUTPUT FORMAT — respond only in this exact JSON:
+{
+  'positive': '<your positive prompt here>',
+  'negative': '(worst quality:1.4), (low quality:1.4), cartoon, illustration, painting, sketch, anime, 3d render artifact, floating geometry, misaligned structure, distorted perspective, watermark, blurry, oversaturated, plastic texture, lens distortion, bad proportions, extra floors, missing windows',
+  'style_notes': '<one sentence about what visual transformation this will apply>'
+}`;
 
 function getMimeType(filename: string): string {
   const ext = filename.split('.').pop()?.toLowerCase();
@@ -462,10 +322,10 @@ export function validateAndSanitizeAnalysis(raw: any, detectedSceneType: string)
   }
 
   // 27. Positive Prompt Draft
-  const positivePromptDraft = String(raw?.positive_prompt_draft || '');
+  const positivePromptDraft = String(raw?.positive_prompt_draft || raw?.positive || '');
 
   // 28. Negative Prompt Draft
-  const negativePromptDraft = String(raw?.negative_prompt_draft || '');
+  const negativePromptDraft = String(raw?.negative_prompt_draft || raw?.negative || '');
 
   // 29. Risk Flags
   const riskFlags = cleanStrArr(raw?.risk_flags);
@@ -474,7 +334,7 @@ export function validateAndSanitizeAnalysis(raw: any, detectedSceneType: string)
   const successCriteria = cleanStrArr(raw?.success_criteria);
 
   // 31. User Summary
-  const userSummary = String(raw?.user_summary || '');
+  const userSummary = String(raw?.user_summary || raw?.style_notes || '');
 
   return {
     scene_type: sceneType,
