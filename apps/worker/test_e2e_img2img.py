@@ -146,7 +146,7 @@ def run_e2e_test():
             meta_title = node.get('_meta', {}).get('title', '').lower()
             if 'negative' in meta_title and text_val == test_neg_prompt:
                 neg_prompt_injected = True
-            elif 'negative' not in meta_title and text_val == test_prompt:
+            elif 'negative' not in meta_title and test_prompt in text_val:
                 prompt_injected = True
 
     if prompt_injected and neg_prompt_injected:

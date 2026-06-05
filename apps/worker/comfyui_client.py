@@ -282,6 +282,13 @@ class ComfyUIClient:
         final_depth_strength = depth_control_strength if depth_control_strength is not None else mode_depth_strength
 
         mapped_denoise = denoise
+        if mapped_denoise is None:
+            if mode in ("creative_concept", "creative"):
+                mapped_denoise = 0.65
+            elif mode in ("balanced_enhancement", "balanced"):
+                mapped_denoise = 0.40
+            else:
+                mapped_denoise = 0.25
 
         # Log final parameters
         print(f"[ComfyUI Client] Final parameters: denoise={mapped_denoise}, geometryLockMode={mode}, control_strength={control_strength}, edge_strength={final_edge_strength}, depth_strength={final_depth_strength}, promptBrainProvider={prompt_brain_provider}")
@@ -364,14 +371,12 @@ class ComfyUIClient:
             # Load Image node — inject input image path, canny control, and depth control
             if class_type == 'LoadImage':
                 meta_title = node.get('_meta', {}).get('title', '').lower()
-                if 'depth' in meta_title:
-                    if depth_control_image and 'image' in inputs:
-                        inputs['image'] = depth_control_image
-                elif 'control' in meta_title or 'canny' in meta_title or 'edge' in meta_title:
-                    if control_image and 'image' in inputs:
-                        inputs['image'] = control_image
-                else:
-                    if input_image and 'image' in inputs:
+                if 'image' in inputs:
+                    if 'depth' in meta_title:
+                        inputs['image'] = depth_control_image or input_image
+                    elif 'control' in meta_title or 'canny' in meta_title or 'edge' in meta_title:
+                        inputs['image'] = control_image or input_image
+                    else:
                         inputs['image'] = input_image
 
             # CheckpointLoaderSimple — select model name
@@ -563,7 +568,14 @@ class ComfyUIClient:
 
                     # Execution complete
                     if msg_type == 'executed' and data.get('prompt_id') == prompt_id:
-                        return self._fetch_history(prompt_id)
+                        # History may not be immediately available — retry briefly
+                        for _retry in range(5):
+                            result = self._fetch_history(prompt_id)
+                            if result is not None:
+                                return result
+                            time.sleep(0.5)
+                        # Fall through to polling if history still not ready
+                        return self._wait_via_polling(prompt_id)
 
                     # Execution error
                     if msg_type == 'execution_error' and data.get('prompt_id') == prompt_id:
@@ -575,7 +587,8 @@ class ComfyUIClient:
 
                     # Queue status — check if our prompt was removed (completed/errored)
                     if msg_type == 'status':
-                        queue = data.get('status', {}).get('exec_info', {})
+                        status_data = data.get('status') or {}
+                        queue = status_data.get('exec_info') or {}
                         pending = queue.get('queue_remaining', -1)
                         if pending == 0:
                             # Queue is empty, check history to see if our job finished
@@ -647,7 +660,9 @@ class ComfyUIClient:
         Returns:
             List of absolute file paths to generated images.
         """
-        outputs = history.get('outputs', {})
+        if not history:
+            return []
+        outputs = history.get('outputs', {}) or {}
         image_paths: list[str] = []
 
         for node_id, node_output in outputs.items():
