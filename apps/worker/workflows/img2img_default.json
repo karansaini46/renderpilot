@@ -116,7 +116,7 @@
       "model": ["4", 0],
       "negative": ["7", 0],
       "positive": ["15", 0],
-      "sampler_name": "dpm_2m_karras",
+      "sampler_name": "dpmpp_2m",
       "scheduler": "karras",
       "seed": 42,
       "steps": 20
