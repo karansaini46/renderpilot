@@ -18,24 +18,6 @@
       "title": "VAE Encode"
     }
   },
-  "3": {
-    "class_type": "KSampler",
-    "inputs": {
-      "cfg": 7.0,
-      "denoise": 0.65,
-      "latent_image": ["2", 0],
-      "model": ["4", 0],
-      "negative": ["7", 0],
-      "positive": ["6", 0],
-      "sampler_name": "euler_ancestral",
-      "scheduler": "normal",
-      "seed": 42,
-      "steps": 20
-    },
-    "_meta": {
-      "title": "KSampler"
-    }
-  },
   "4": {
     "class_type": "CheckpointLoaderSimple",
     "inputs": {
@@ -63,6 +45,54 @@
     },
     "_meta": {
       "title": "Negative Prompt"
+    }
+  },
+  "10": {
+    "class_type": "ControlNetLoader",
+    "inputs": {
+      "control_net_name": "control_v11p_sd15_canny.pth"
+    },
+    "_meta": {
+      "title": "Load ControlNet Model"
+    }
+  },
+  "11": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "control_input.png"
+    },
+    "_meta": {
+      "title": "Load Canny Control Image"
+    }
+  },
+  "12": {
+    "class_type": "ControlNetApply",
+    "inputs": {
+      "conditioning": ["6", 0],
+      "control_net": ["10", 0],
+      "image": ["11", 0],
+      "strength": 0.9
+    },
+    "_meta": {
+      "title": "Apply ControlNet (Canny)"
+    }
+  },
+  "3": {
+    "class_type": "KSampler",
+    "inputs": {
+      "cfg": 7.0,
+      "denoise": 0.65,
+      "latent_image": ["2", 0],
+      "model": ["4", 0],
+      "negative": ["7", 0],
+      "positive": ["12", 0],
+      "sampler_name": "euler_ancestral",
+      "scheduler": "normal",
+      "seed": 42,
+      "steps": 20
+    },
+    "_meta": {
+      "title": "KSampler"
     }
   },
   "8": {

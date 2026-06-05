@@ -261,25 +261,10 @@ class ComfyUIClient:
         final_edge_strength = edge_control_strength if edge_control_strength is not None else control_strength
         final_depth_strength = depth_control_strength if depth_control_strength is not None else control_strength
 
-        # Resolve final denoise: respect explicit setting if present, else use safe defaults
-        if denoise is not None:
-            final_denoise = denoise
-        else:
-            if mode == 'strict_structure':
-                final_denoise = 0.25
-            elif mode == 'balanced_enhancement':
-                final_denoise = 0.40
-            elif mode == 'creative_concept':
-                final_denoise = 0.65
-            elif mode == 'creative':
-                final_denoise = 0.60
-            elif mode == 'balanced':
-                final_denoise = 0.40
-            else:  # accurate, faithful, technical, or default
-                final_denoise = 0.25
+        mapped_denoise = denoise
 
         # Log final parameters
-        print(f"[ComfyUI Client] Final parameters: denoise={final_denoise}, geometryLockMode={mode}, control_strength={control_strength}, edge_strength={final_edge_strength}, depth_strength={final_depth_strength}, promptBrainProvider={prompt_brain_provider}")
+        print(f"[ComfyUI Client] Final parameters: denoise={mapped_denoise}, geometryLockMode={mode}, control_strength={control_strength}, edge_strength={final_edge_strength}, depth_strength={final_depth_strength}, promptBrainProvider={prompt_brain_provider}")
 
         # Check ControlNet model availability
         controlnet_ok = self.check_controlnet_available("control_v11p_sd15_canny.pth")
@@ -310,7 +295,7 @@ class ComfyUIClient:
                 if 'cfg' in inputs:
                     inputs['cfg'] = cfg_scale
                 if 'denoise' in inputs:
-                    inputs['denoise'] = final_denoise
+                    inputs['denoise'] = mapped_denoise
 
             # ControlNet apply nodes — inject control strength
             if class_type in ('ControlNetApply', 'ControlNetApplyAdvanced'):
@@ -693,7 +678,7 @@ class ComfyUIClient:
         height: int = 768,
         steps: int = 20,
         cfg_scale: float = 7.0,
-        denoise: float | None = None,
+        denoise: float = 0.50,
         geometry_lock_mode: str = 'accurate',
         control_image: str | None = None,
         comfyui_output_dir: str | None = None,
