@@ -198,8 +198,8 @@ class ComfyUIClient:
         cfg_scale: float = 7.0,
         denoise: float | None = None,
         geometry_lock_mode: str = 'accurate',
-        control_image: str | None = None,
-        depth_control_image: str | None = None,
+        control_image: str | None = "NOT_PROVIDED",
+        depth_control_image: str | None = "NOT_PROVIDED",
         prompt_brain_provider: str = 'unknown',
         edge_control_strength: float | None = None,
         depth_control_strength: float | None = None,
@@ -293,27 +293,47 @@ class ComfyUIClient:
         # Log final parameters
         print(f"[ComfyUI Client] Final parameters: denoise={mapped_denoise}, geometryLockMode={mode}, control_strength={control_strength}, edge_strength={final_edge_strength}, depth_strength={final_depth_strength}, promptBrainProvider={prompt_brain_provider}")
 
-        # Check ControlNet model availability (both depth and canny)
+        # Resolve inputs
+        resolved_control_image = input_image if control_image == "NOT_PROVIDED" else control_image
+        resolved_depth_control_image = input_image if depth_control_image == "NOT_PROVIDED" else depth_control_image
+
+        # Check ControlNet model availability (both depth and canny) and presence of images
         canny_ok = self.check_controlnet_available("control_v11p_sd15_canny.pth")
         depth_ok = self.check_controlnet_available("control_v11f1p_sd15_depth.pth")
-        if not canny_ok or not depth_ok:
-            missing = []
-            if not depth_ok:
-                missing.append("control_v11f1p_sd15_depth.pth")
-            if not canny_ok:
-                missing.append("control_v11p_sd15_canny.pth")
-            print(f"[ControlNet] WARNING: Missing ControlNet models: {', '.join(missing)}. Skipping ControlNet — renders will ignore scene structure.", file=sys.stderr)
-            # Remove all controlnet nodes from workflow and redirect KSampler inputs
-            for nid in ["10", "11", "12", "13", "14", "15"]:
-                if nid in workflow:
-                    del workflow[nid]
-            for node in workflow.values():
-                if node.get("class_type") in ("KSampler", "KSamplerAdvanced"):
-                    inputs = node.get("inputs", {})
-                    if 'positive' in inputs:
-                        inputs['positive'] = ["6", 0]
-                    if 'negative' in inputs:
-                        inputs['negative'] = ["7", 0]
+
+        has_depth = depth_ok and (resolved_depth_control_image is not None)
+        has_canny = canny_ok and (resolved_control_image is not None)
+
+        if not has_depth or not has_canny:
+            if not has_depth and not has_canny:
+                print("[ControlNet] WARNING: Both ControlNet models are missing/disabled. Skipping ControlNet entirely.", file=sys.stderr)
+                for nid in ["10", "11", "12", "13", "14", "15"]:
+                    if nid in workflow:
+                        del workflow[nid]
+                for node in workflow.values():
+                    if node.get("class_type") in ("KSampler", "KSamplerAdvanced"):
+                        inputs = node.get("inputs", {})
+                        if 'positive' in inputs:
+                            inputs['positive'] = ["6", 0]
+                        if 'negative' in inputs:
+                            inputs['negative'] = ["7", 0]
+            elif not has_depth:
+                print("[ControlNet] WARNING: Depth ControlNet is missing/disabled. Skipping depth map control.", file=sys.stderr)
+                for nid in ["10", "11", "12"]:
+                    if nid in workflow:
+                        del workflow[nid]
+                if "15" in workflow:
+                    workflow["15"]["inputs"]["conditioning"] = ["6", 0]
+            elif not has_canny:
+                print("[ControlNet] WARNING: Canny ControlNet is missing/disabled. Skipping canny edge control.", file=sys.stderr)
+                for nid in ["13", "14", "15"]:
+                    if nid in workflow:
+                        del workflow[nid]
+                for node in workflow.values():
+                    if node.get("class_type") in ("KSampler", "KSamplerAdvanced"):
+                        inputs = node.get("inputs", {})
+                        if 'positive' in inputs:
+                            inputs['positive'] = ["12", 0]
 
         for node_id, node in list(workflow.items()):
             class_type = node.get('class_type', '')
@@ -373,9 +393,9 @@ class ComfyUIClient:
                 meta_title = node.get('_meta', {}).get('title', '').lower()
                 if 'image' in inputs:
                     if 'depth' in meta_title:
-                        inputs['image'] = depth_control_image or input_image
+                        inputs['image'] = resolved_depth_control_image or input_image
                     elif 'control' in meta_title or 'canny' in meta_title or 'edge' in meta_title:
-                        inputs['image'] = control_image or input_image
+                        inputs['image'] = resolved_control_image or input_image
                     else:
                         inputs['image'] = input_image
 
