@@ -190,7 +190,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const { projectId, settingsJson, forceRegenerate } = body;
+    const { projectId, settingsJson, forceRegenerate, forceGemini } = body;
 
     if (!projectId || projectId.trim() === '') {
       return NextResponse.json(
@@ -324,24 +324,35 @@ export async function POST(request: Request) {
     // Query preference memory for the best matching settings from past approvals
     let memoryApplied = false;
     let memorySource = '';
-    try {
-      const activeProjectMeta = {
-        projectType,
-        sceneType,
-        stylePreference: stylePreset.name
-      };
-      
-      const memorySettings = await findBestMemoryMatch(activeProjectMeta);
-      if (memorySettings) {
-        // Exclude internal _memory keys before merging
-        const { _memory_scope, _memory_score, _memory_source_render, ...restMemory } = memorySettings;
-        finalSettings = { ...finalSettings, ...restMemory };
-        memoryApplied = true;
-        memorySource = _memory_scope || '';
+    const isForceRegenerate = !!forceRegenerate || !!userSettings.forceRegenerate;
+    const isForceGemini = !!forceGemini || !!userSettings.forceGemini;
+
+    if (!isForceRegenerate) {
+      try {
+        const activeProjectMeta = {
+          projectType,
+          sceneType,
+          stylePreference: stylePreset.name
+        };
+        
+        const memorySettings = await findBestMemoryMatch(activeProjectMeta);
+        if (memorySettings) {
+          // Exclude internal _memory keys before merging
+          const { _memory_scope, _memory_score, _memory_source_render, ...restMemory } = memorySettings;
+          if (isForceGemini) {
+            // Bypasses memory for prompt generation specifically but still applies other memory settings like denoise and geometryLockMode
+            const { prompt, negativePrompt, ...nonPromptMemory } = restMemory;
+            finalSettings = { ...finalSettings, ...nonPromptMemory };
+          } else {
+            finalSettings = { ...finalSettings, ...restMemory };
+          }
+          memoryApplied = true;
+          memorySource = _memory_scope || '';
+        }
+      } catch (memoryErr: any) {
+        // Memory lookup is non-blocking — log but don't fail job creation
+        console.error('[Preference Memory Lookup Error]:', memoryErr.message);
       }
-    } catch (memoryErr: any) {
-      // Memory lookup is non-blocking — log but don't fail job creation
-      console.error('[Preference Memory Lookup Error]:', memoryErr.message);
     }
 
     // Retrieve locked material mappings from the database for this project
@@ -386,7 +397,7 @@ export async function POST(request: Request) {
       : '';
       
     // Try to load cached analysis if caching is enabled
-    if (projectFile && env.PROMPT_BRAIN_CACHE_ENABLED && analysisCacheKey) {
+    if (projectFile && env.PROMPT_BRAIN_CACHE_ENABLED && analysisCacheKey && !isForceRegenerate) {
       try {
         const cachedAnalysis = await prisma.promptBrainAnalysis.findFirst({
           where: { cacheKey: analysisCacheKey }
@@ -403,7 +414,7 @@ export async function POST(request: Request) {
     
     // If not cached or caching is disabled, run analysis
     if (!analysisResult && projectFile) {
-      if (pbProvider === 'gemini' && env.GEMINI_API_KEY) {
+      if ((pbProvider === 'gemini' || isForceRegenerate) && env.GEMINI_API_KEY) {
         try {
           const geminiRes = await analyzeProjectImage(project.id, sceneType);
           if (geminiRes.success && geminiRes.analysis && geminiRes.analysis.confidence >= (env.PROMPT_BRAIN_MIN_CONFIDENCE || 0.75)) {
