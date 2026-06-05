@@ -950,14 +950,47 @@ def process_job(conn, job):
             variations = 1
             denoise = 0.25 # Low denoise to preserve composition/details
         else:
-            # 2. Fetch the latest input reference image from project_files
+            # 2. Fetch the latest input reference image from project_files with role/control-map filters
             cur.execute("""
                 SELECT file_url FROM project_files 
-                WHERE project_id = %s AND file_type LIKE 'image/%%'
+                WHERE project_id = %s 
+                  AND file_type LIKE 'image/%%'
+                  AND (
+                    CASE WHEN metadata_json IS NOT NULL AND metadata_json != '' THEN metadata_json::json->>'role' ELSE NULL END IN ('input', 'scene_render', 'original')
+                    AND (CASE WHEN metadata_json IS NOT NULL AND metadata_json != '' THEN metadata_json::json->>'preprocessor' ELSE NULL END) IS NULL
+                    AND file_url NOT LIKE '%%canny_%%' AND file_url NOT LIKE '%%depth_%%'
+                  )
                 ORDER BY created_at DESC 
                 LIMIT 1;
             """, (project_id,))
             file_row = cur.fetchone()
+            
+            if not file_row:
+                # Fall back to the most recently uploaded file that is not a control map
+                cur.execute("""
+                    SELECT file_url FROM project_files 
+                    WHERE project_id = %s 
+                      AND file_type LIKE 'image/%%'
+                      AND (
+                        CASE WHEN metadata_json IS NOT NULL AND metadata_json != '' THEN metadata_json::json->>'role' ELSE NULL END IS NULL 
+                        OR CASE WHEN metadata_json IS NOT NULL AND metadata_json != '' THEN metadata_json::json->>'role' ELSE NULL END != 'control_map'
+                      )
+                      AND file_url NOT LIKE '%%canny_%%' AND file_url NOT LIKE '%%depth_%%'
+                    ORDER BY created_at DESC 
+                    LIMIT 1;
+                """, (project_id,))
+                file_row = cur.fetchone()
+                
+            if not file_row:
+                # Absolute fallback to any image file
+                cur.execute("""
+                    SELECT file_url FROM project_files 
+                    WHERE project_id = %s AND file_type LIKE 'image/%%'
+                    ORDER BY created_at DESC 
+                    LIMIT 1;
+                """, (project_id,))
+                file_row = cur.fetchone()
+                
             if not file_row:
                 # Fall back to any file type if no specific image type is marked
                 cur.execute("""
@@ -1282,6 +1315,9 @@ def process_job(conn, job):
                     "faithful": 0.35
                 }
                 denoise = mode_denoise_map.get(geometry_lock_mode, 0.60)
+                print(f"[Denoise Trace] Denoise resolved to {denoise} from mode_denoise_map (mode: {geometry_lock_mode})")
+            else:
+                print(f"[Denoise Trace] Denoise resolved to {denoise} from job settings / preference memory")
                 
             clamped_settings["denoise"] = denoise
             clamped_settings["geometryLockMode"] = geometry_lock_mode
