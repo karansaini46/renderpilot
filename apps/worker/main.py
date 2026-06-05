@@ -1044,7 +1044,7 @@ def process_job(conn, job):
                     event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
                     cur_file.execute("""
                         INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
-                        VALUES (%s, %s, 'preprocessing', %s, %s, %s);
+                        VALUES (%s, %s, %s, %s, %s, %s);
                     """, (
                         event_id,
                         job_id,

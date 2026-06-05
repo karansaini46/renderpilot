@@ -679,7 +679,7 @@ async function findBestMemoryMatch(
   ];
 
   for (const scopePrefix of scopeCandidates) {
-    const match = await prisma.preferenceMemory.findFirst({
+    const matches = await prisma.preferenceMemory.findMany({
       where: {
         key: memoryKey,
         scope: { startsWith: scopePrefix },
@@ -687,7 +687,16 @@ async function findBestMemoryMatch(
       orderBy: { score: 'desc' },
     });
 
-    if (match) {
+    for (const match of matches) {
+      const scopeLower = match.scope.toLowerCase();
+      // Guard against cross-scene contamination (e.g. interior matching an exterior memory, or vice versa)
+      if (sceneType === 'interior' && scopeLower.includes(':exterior')) {
+        continue;
+      }
+      if (sceneType === 'exterior' && scopeLower.includes(':interior')) {
+        continue;
+      }
+
       let memoryValue: Record<string, any> = {};
       try {
         memoryValue = JSON.parse(match.valueJson || '{}');

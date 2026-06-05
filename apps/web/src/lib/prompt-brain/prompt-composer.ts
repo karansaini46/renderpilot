@@ -128,7 +128,7 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
 
   // 3. Exterior jobs
   if (sceneType === 'Exterior') {
-    const exteriorCandidates = ['bed', 'bedroom', 'living room', 'sofa', 'fireplace', 'kitchen', 'bathroom', 'interior', 'indoor', 'dining room', 'couch'];
+    const exteriorCandidates = ['bed', 'bedroom', 'living room', 'sofa', 'fireplace', 'kitchen', 'bathroom', 'interior', 'indoor', 'dining room', 'couch', 'furniture', 'ceilings', 'paneling', 'carpet', 'rug', 'curtain', 'chandelier'];
     for (const term of exteriorCandidates) {
       if (!isTermVisibleInAnalysis(term, analysis)) {
         activeBlockedTerms.push(term);

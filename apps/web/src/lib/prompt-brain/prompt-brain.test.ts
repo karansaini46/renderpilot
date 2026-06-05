@@ -139,6 +139,9 @@ const mockPrisma: any = {
   preferenceMemory: {
     findFirst: async (args: any) => {
       return null;
+    },
+    findMany: async (args: any) => {
+      return [];
     }
   },
   render: {
