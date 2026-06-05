@@ -1098,6 +1098,86 @@ def process_job(conn, job):
                 local_control_path = None
                 s3_control_key = None
 
+            # 5c. Generate depth map locally (PIL only — no torch, no MiDaS, lightweight for 4GB VRAM)
+            local_depth_path = None
+            s3_depth_key = None
+            try:
+                from PIL import Image, ImageFilter, ImageOps, ImageEnhance
+                local_depth_filename = f"depth_{job_id}.png"
+                local_depth_path = os.path.join(workspace_dir, local_depth_filename)
+
+                print(f"[{datetime.datetime.now().strftime('%T')}] Generating lightweight depth map locally...")
+                with Image.open(local_input_path) as img:
+                    # Convert to grayscale
+                    gray = img.convert("L")
+                    # Apply GaussianBlur radius=6
+                    blurred = gray.filter(ImageFilter.GaussianBlur(radius=6))
+                    # Invert the result (closer objects become brighter)
+                    inverted = ImageOps.invert(blurred)
+                    # Enhance contrast x1.5
+                    enhancer = ImageEnhance.Contrast(inverted)
+                    depth_map = enhancer.enhance(1.5)
+                    # Save as RGB for ControlNet compatibility
+                    depth_map.convert("RGB").save(local_depth_path, "PNG")
+
+                print(f"[{datetime.datetime.now().strftime('%T')}] Depth map generated: {local_depth_path}")
+
+                # Upload depth map to object storage
+                timestamp_sec = int(time.time())
+                s3_depth_key = f"users/{user_id}/projects/{project_id}/previews/depth_{job_id}_{timestamp_sec}.png"
+                print(f"[{datetime.datetime.now().strftime('%T')}] Uploading depth map to S3: {s3_depth_key}")
+                uploadFileFromWorker(local_depth_path, s3_depth_key)
+
+                # Register in project_files database
+                depth_file_id = f"file_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                depth_metadata_json = json.dumps({
+                    "size": f"{(os.path.getsize(local_depth_path) / 1024):.2f} KB",
+                    "uploadedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "role": "control_map",
+                    "preprocessor": "depth",
+                    "sourceJobId": job_id
+                })
+
+                cur_depth_file = conn.cursor()
+                try:
+                    cur_depth_file.execute("""
+                        INSERT INTO project_files (id, project_id, file_url, file_type, metadata_json, created_at)
+                        VALUES (%s, %s, %s, %s, %s, %s);
+                    """, (
+                        depth_file_id,
+                        project_id,
+                        s3_depth_key,
+                        "image/png",
+                        depth_metadata_json,
+                        datetime.datetime.now(datetime.timezone.utc)
+                    ))
+
+                    # Log preprocessing job event
+                    event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                    cur_depth_file.execute("""
+                        INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                        VALUES (%s, %s, %s, %s, %s, %s);
+                    """, (
+                        event_id,
+                        job_id,
+                        "preprocessing",
+                        "Depth map preprocessed locally and saved.",
+                        json.dumps({"fileId": depth_file_id, "s3Key": s3_depth_key}),
+                        datetime.datetime.now(datetime.timezone.utc)
+                    ))
+                    conn.commit()
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Registered depth map in DB: {depth_file_id}")
+                except Exception as db_err:
+                    conn.rollback()
+                    print(f"Failed to save depth map metadata to database: {db_err}", file=sys.stderr)
+                finally:
+                    cur_depth_file.close()
+
+            except Exception as depth_err:
+                print(f"Failed to preprocess depth map: {depth_err}", file=sys.stderr)
+                local_depth_path = None
+                s3_depth_key = None
+
             # Release lock for CONTROL_MAP_PREPROCESSING
             if config.LOCAL_RESOURCE_LOCK_ENABLED:
                 resource_lock.release()
@@ -1141,7 +1221,7 @@ def process_job(conn, job):
                 if not acquired:
                     time.sleep(2)
 
-        # 7. Initialize ComfyUI client and upload input image & control map
+        # 7. Initialize ComfyUI client and upload input image, control map, and depth map
         print(f"[{datetime.datetime.now().strftime('%T')}] Initializing ComfyUI client at {config.COMFYUI_URL}...")
         comfy_client = ComfyUIClient(config.COMFYUI_URL)
         comfy_client.check_health()
@@ -1152,10 +1232,18 @@ def process_job(conn, job):
         comfyui_control_name = None
         if local_control_path:
             try:
-                print(f"[{datetime.datetime.now().strftime('%T')}] Uploading control map image to ComfyUI...")
+                print(f"[{datetime.datetime.now().strftime('%T')}] Uploading canny control map image to ComfyUI...")
                 comfyui_control_name = comfy_client.upload_image(local_control_path)
             except Exception as comfy_upload_err:
                 print(f"Failed to upload control map to ComfyUI: {comfy_upload_err}", file=sys.stderr)
+
+        comfyui_depth_name = None
+        if local_depth_path:
+            try:
+                print(f"[{datetime.datetime.now().strftime('%T')}] Uploading depth map image to ComfyUI...")
+                comfyui_depth_name = comfy_client.upload_image(local_depth_path)
+            except Exception as comfy_upload_err:
+                print(f"Failed to upload depth map to ComfyUI: {comfy_upload_err}", file=sys.stderr)
 
         # 8. Render variations sequentially
         if not is_upscale:
@@ -1240,6 +1328,7 @@ def process_job(conn, job):
                 denoise=denoise,
                 geometry_lock_mode=geometry_lock_mode,
                 control_image=comfyui_control_name,
+                depth_control_image=comfyui_depth_name,
                 on_progress=on_comfyui_progress,
                 prompt_brain_provider=prompt_brain_provider,
                 edge_control_strength=edge_control_strength,

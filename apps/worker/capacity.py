@@ -11,9 +11,11 @@ import copy
 
 # Default laptop hardware profile — conservative limits
 # that prevent VRAM exhaustion and thermal throttling on consumer GPUs.
+# 4GB VRAM profile — SD 1.5 only, no SDXL
 LAPTOP_PROFILE = {
     "max_concurrent_jobs": 1,
     "max_preview_resolution": 768,
+    "max_steps": 25,
     "max_variations_per_job": 4,
     "sequential_variations": True,
     "sdxl_enabled": False,
@@ -81,6 +83,16 @@ def downshift_job_settings(raw_settings: str | dict, profile: dict | None = None
             f"(laptop profile limit)."
         )
         settings["variations"] = max_var
+
+    # Step count capping
+    requested_steps = settings.get("steps", 0)
+    max_steps = profile.get("max_steps", 25)
+    if requested_steps > max_steps:
+        adjustments.append(
+            f"Step count reduced from {requested_steps} to {max_steps} "
+            f"(laptop profile limit)."
+        )
+        settings["steps"] = max_steps
 
     # Force sequential variation generation
     if profile["sequential_variations"]:

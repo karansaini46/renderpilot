@@ -192,13 +192,14 @@ class ComfyUIClient:
         negative_prompt: str = '',
         seed: int = 42,
         output_folder: str = '',
-        width: int = 768,
-        height: int = 768,
+        width: int = 512,
+        height: int = 512,
         steps: int = 20,
         cfg_scale: float = 7.0,
         denoise: float | None = None,
         geometry_lock_mode: str = 'accurate',
         control_image: str | None = None,
+        depth_control_image: str | None = None,
         prompt_brain_provider: str = 'unknown',
         edge_control_strength: float | None = None,
         depth_control_strength: float | None = None,
@@ -228,50 +229,75 @@ class ComfyUIClient:
             The modified workflow dict.
         """
         # Map geometry lock mode to ComfyUI variables
+        # Dual ControlNet strength profiles: (depth_strength, canny_strength)
         mode = (geometry_lock_mode or 'strict_structure').lower()
         control_strength = 0.9
+        mode_depth_strength = 0.75
+        mode_canny_strength = 0.45
         prompt_constraint = ""
 
         if mode == 'strict_structure':
             control_strength = 1.0
+            mode_depth_strength = 0.90
+            mode_canny_strength = 0.60
             prompt_constraint = "photorealistic architectural render optimization, realistic materials, natural lighting, accurate shadows, glass reflections, realistic texture detail, professional archviz polish, same building geometry, same camera composition"
         elif mode == 'balanced_enhancement':
             control_strength = 0.75
+            mode_depth_strength = 0.55
+            mode_canny_strength = 0.38
             prompt_constraint = "preserves composition, balanced style changes"
         elif mode == 'creative_concept':
             control_strength = 0.40
+            mode_depth_strength = 0.35
+            mode_canny_strength = 0.25
             prompt_constraint = "more visual freedom, creative details, concept rendering"
         elif mode == 'creative':
             control_strength = 0.4
+            mode_depth_strength = 0.35
+            mode_canny_strength = 0.25
             prompt_constraint = "more visual freedom, creative details"
         elif mode == 'balanced':
             control_strength = 0.7
+            mode_depth_strength = 0.55
+            mode_canny_strength = 0.38
             prompt_constraint = "preserves composition, balanced style changes"
         elif mode == 'accurate':
             control_strength = 0.9
+            mode_depth_strength = 0.75
+            mode_canny_strength = 0.45
             prompt_constraint = "strict composition preservation, realistic structure, client-ready layout"
         elif mode in ('technical', 'faithful'):
             control_strength = 1.0
+            mode_depth_strength = 0.90
+            mode_canny_strength = 0.60
             prompt_constraint = "strongest preservation of contours, exact geometry, technical blueprint match"
         else:
             control_strength = 1.0
+            mode_depth_strength = 0.90
+            mode_canny_strength = 0.60
             prompt_constraint = "photorealistic architectural render optimization, realistic materials, natural lighting, accurate shadows, glass reflections, realistic texture detail, professional archviz polish, same building geometry, same camera composition"
 
-        # Resolve edge and depth control strengths
-        final_edge_strength = edge_control_strength if edge_control_strength is not None else control_strength
-        final_depth_strength = depth_control_strength if depth_control_strength is not None else control_strength
+        # Resolve edge and depth control strengths from per-mode defaults
+        final_edge_strength = edge_control_strength if edge_control_strength is not None else mode_canny_strength
+        final_depth_strength = depth_control_strength if depth_control_strength is not None else mode_depth_strength
 
         mapped_denoise = denoise
 
         # Log final parameters
         print(f"[ComfyUI Client] Final parameters: denoise={mapped_denoise}, geometryLockMode={mode}, control_strength={control_strength}, edge_strength={final_edge_strength}, depth_strength={final_depth_strength}, promptBrainProvider={prompt_brain_provider}")
 
-        # Check ControlNet model availability
-        controlnet_ok = self.check_controlnet_available("control_v11p_sd15_canny.pth")
-        if not controlnet_ok:
-            print("[ControlNet] WARNING: control_v11p_sd15_canny.pth not found in ComfyUI. Skipping ControlNet — renders will ignore scene structure.", file=sys.stderr)
-            # Remove controlnet nodes from workflow and redirect KSampler inputs
-            for nid in ["10", "11", "12"]:
+        # Check ControlNet model availability (both depth and canny)
+        canny_ok = self.check_controlnet_available("control_v11p_sd15_canny.pth")
+        depth_ok = self.check_controlnet_available("control_v11f1p_sd15_depth.pth")
+        if not canny_ok or not depth_ok:
+            missing = []
+            if not depth_ok:
+                missing.append("control_v11f1p_sd15_depth.pth")
+            if not canny_ok:
+                missing.append("control_v11p_sd15_canny.pth")
+            print(f"[ControlNet] WARNING: Missing ControlNet models: {', '.join(missing)}. Skipping ControlNet — renders will ignore scene structure.", file=sys.stderr)
+            # Remove all controlnet nodes from workflow and redirect KSampler inputs
+            for nid in ["10", "11", "12", "13", "14", "15"]:
                 if nid in workflow:
                     del workflow[nid]
             for node in workflow.values():
@@ -308,10 +334,11 @@ class ComfyUIClient:
                     else:
                         inputs['strength'] = control_strength
 
-            # ControlNetLoader node — inject controlnet model name
+            # ControlNetLoader node — preserve existing model name (depth vs canny)
+            # Each loader already has the correct model name from the workflow template;
+            # do not overwrite since we now have two distinct ControlNet models.
             if class_type == 'ControlNetLoader':
-                if 'control_net_name' in inputs:
-                    inputs['control_net_name'] = "control_v11p_sd15_canny.pth"
+                pass  # Model names are set in the workflow JSON template
 
             # CLIP Text Encode nodes — inject prompts with constraints
             # Convention: node title or _meta.title containing "negative" gets negative prompt
@@ -334,10 +361,13 @@ class ComfyUIClient:
                 if 'height' in inputs:
                     inputs['height'] = height
 
-            # Load Image node — inject input image path
+            # Load Image node — inject input image path, canny control, and depth control
             if class_type == 'LoadImage':
                 meta_title = node.get('_meta', {}).get('title', '').lower()
-                if 'control' in meta_title or 'canny' in meta_title or 'edge' in meta_title:
+                if 'depth' in meta_title:
+                    if depth_control_image and 'image' in inputs:
+                        inputs['image'] = depth_control_image
+                elif 'control' in meta_title or 'canny' in meta_title or 'edge' in meta_title:
                     if control_image and 'image' in inputs:
                         inputs['image'] = control_image
                 else:
@@ -674,13 +704,14 @@ class ComfyUIClient:
         negative_prompt: str = '',
         seed: int = 42,
         output_folder: str = 'RenderPilot',
-        width: int = 768,
-        height: int = 768,
+        width: int = 512,
+        height: int = 512,
         steps: int = 20,
         cfg_scale: float = 7.0,
         denoise: float = 0.50,
         geometry_lock_mode: str = 'accurate',
         control_image: str | None = None,
+        depth_control_image: str | None = None,
         comfyui_output_dir: str | None = None,
         on_progress=None,
         prompt_brain_provider: str = 'unknown',
@@ -734,6 +765,7 @@ class ComfyUIClient:
             denoise=denoise,
             geometry_lock_mode=geometry_lock_mode,
             control_image=control_image,
+            depth_control_image=depth_control_image,
             prompt_brain_provider=prompt_brain_provider,
             edge_control_strength=edge_control_strength,
             depth_control_strength=depth_control_strength,

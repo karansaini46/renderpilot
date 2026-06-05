@@ -21,7 +21,7 @@
   "4": {
     "class_type": "CheckpointLoaderSimple",
     "inputs": {
-      "ckpt_name": "v1-5-pruned-emaonly.safetensors"
+      "ckpt_name": "realisticVisionV60B1_v60B1VAE.safetensors"
     },
     "_meta": {
       "title": "Load Checkpoint"
@@ -41,7 +41,7 @@
     "class_type": "CLIPTextEncode",
     "inputs": {
       "clip": ["4", 1],
-      "text": "low quality, blurry, watermark, text, distorted, ugly, bad anatomy"
+      "text": "cartoon, blurry, watermark, bad geometry, floating elements, oversaturated, lens distortion"
     },
     "_meta": {
       "title": "Negative Prompt"
@@ -50,19 +50,19 @@
   "10": {
     "class_type": "ControlNetLoader",
     "inputs": {
-      "control_net_name": "control_v11p_sd15_canny.pth"
+      "control_net_name": "control_v11f1p_sd15_depth.pth"
     },
     "_meta": {
-      "title": "Load ControlNet Model"
+      "title": "Load ControlNet Depth Model"
     }
   },
   "11": {
     "class_type": "LoadImage",
     "inputs": {
-      "image": "control_input.png"
+      "image": "depth_input.png"
     },
     "_meta": {
-      "title": "Load Canny Control Image"
+      "title": "Load Depth Control Image"
     }
   },
   "12": {
@@ -71,7 +71,37 @@
       "conditioning": ["6", 0],
       "control_net": ["10", 0],
       "image": ["11", 0],
-      "strength": 0.9
+      "strength": 0.75
+    },
+    "_meta": {
+      "title": "Apply ControlNet (Depth)"
+    }
+  },
+  "13": {
+    "class_type": "ControlNetLoader",
+    "inputs": {
+      "control_net_name": "control_v11p_sd15_canny.pth"
+    },
+    "_meta": {
+      "title": "Load ControlNet Canny Model"
+    }
+  },
+  "14": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "canny_input.png"
+    },
+    "_meta": {
+      "title": "Load Canny Control Image"
+    }
+  },
+  "15": {
+    "class_type": "ControlNetApply",
+    "inputs": {
+      "conditioning": ["12", 0],
+      "control_net": ["13", 0],
+      "image": ["14", 0],
+      "strength": 0.45
     },
     "_meta": {
       "title": "Apply ControlNet (Canny)"
@@ -81,13 +111,13 @@
     "class_type": "KSampler",
     "inputs": {
       "cfg": 7.0,
-      "denoise": 0.65,
+      "denoise": 0.50,
       "latent_image": ["2", 0],
       "model": ["4", 0],
       "negative": ["7", 0],
-      "positive": ["12", 0],
-      "sampler_name": "euler_ancestral",
-      "scheduler": "normal",
+      "positive": ["15", 0],
+      "sampler_name": "dpm_2m_karras",
+      "scheduler": "karras",
       "seed": 42,
       "steps": 20
     },
@@ -95,21 +125,21 @@
       "title": "KSampler"
     }
   },
-  "8": {
-    "class_type": "VAEDecode",
+  "16": {
+    "class_type": "VAETilingDecode",
     "inputs": {
       "samples": ["3", 0],
       "vae": ["4", 2]
     },
     "_meta": {
-      "title": "VAE Decode"
+      "title": "VAE Tiling Decode"
     }
   },
   "9": {
     "class_type": "SaveImage",
     "inputs": {
       "filename_prefix": "RenderPilot",
-      "images": ["8", 0]
+      "images": ["16", 0]
     },
     "_meta": {
       "title": "Save Image"

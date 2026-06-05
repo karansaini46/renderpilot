@@ -44,6 +44,16 @@ const MASTER_INSTRUCTION = `
 You are RenderPilot's PromptBrain. Analyze the provided architectural visualization image and return a JSON object conforming exactly to the following TypeScript interface structure.
 Do NOT include any markdown, triple backticks (e.g. \`\`\`json), or text outside the JSON object.
 
+CRITICAL — SD 1.5 PROMPT RULES (CLIP limit = 75 tokens):
+- positive_prompt_draft MUST be under 75 tokens. Shorter is better.
+- Start with the most important descriptor first.
+- Format: "{material} {surface_quality}, {lighting}, {atmosphere}, architectural photography"
+- Example: "exposed concrete facade, rough texture, golden hour side light, sharp shadows, architectural photography"
+- Do NOT use SDXL-style verbose descriptors, long sentences, or comma-separated adjective chains.
+- Keep it compact: material > surface > light > mood > "architectural photography"
+- negative_prompt_draft MUST always include: "cartoon, blurry, watermark, bad geometry, floating elements, oversaturated, lens distortion"
+- You may append additional negative terms relevant to the scene, but keep the total under 40 tokens.
+
 interface CameraView {
   angle: string;
   elevation: string;
@@ -192,6 +202,7 @@ interface PromptBrainSchema {
 }
 
 Provide highly descriptive analysis details mapping exactly to the architectural layout, textures, materials, and lighting characteristics seen in the image.
+Remember: positive_prompt_draft must be SD 1.5 optimized — max 75 tokens, material-first, compact format.
 `;
 
 function getMimeType(filename: string): string {
