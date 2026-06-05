@@ -335,7 +335,7 @@ export async function POST(request: Request) {
           stylePreference: stylePreset.name
         };
         
-        const memorySettings = await findBestMemoryMatch(activeProjectMeta);
+        const memorySettings = await findBestMemoryMatch(activeProjectMeta, forceRegenerate);
         if (memorySettings) {
           // Exclude internal _memory keys before merging
           const { _memory_scope, _memory_score, _memory_source_render, ...restMemory } = memorySettings;
@@ -551,7 +551,8 @@ export async function POST(request: Request) {
     finalSettings.materialChoices = combinedMaterials;
     finalSettings.renderMode = userSettings.job_type || userSettings.jobType || composerResult.renderMode;
     // Resolve mode and parameters
-    let renderMode = userSettings.geometryLockMode || finalSettings.geometryLockMode || composerResult.geometryLockMode || 'strict_structure';
+    const geometryLockMode = userSettings.geometryLockMode || finalSettings.geometryLockMode || composerResult.geometryLockMode || 'strict_structure';
+    let renderMode = geometryLockMode;
     if (renderMode === 'strict' || renderMode === 'accurate' || renderMode === 'technical' || renderMode === 'strict_structure') {
       renderMode = 'strict_structure';
     } else if (renderMode === 'balanced' || renderMode === 'balanced_enhancement') {
@@ -566,35 +567,57 @@ export async function POST(request: Request) {
     let edgeStrength = 1.0;
     let depthStrength = 1.0;
 
-    if (renderMode === 'strict_structure') {
+    if (geometryLockMode === 'technical' || geometryLockMode === 'strict' || geometryLockMode === 'strict_structure') {
       if (denoise === undefined || denoise === null) {
-        denoise = 0.25;
+        denoise = 0.35;
       } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.20), 0.35);
+        denoise = Math.min(Math.max(Number(denoise), 0.25), 0.45);
       }
       edgeStrength = 1.0;
       depthStrength = 1.0;
-    } else if (renderMode === 'balanced_enhancement') {
+      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
+    } else if (geometryLockMode === 'accurate') {
       if (denoise === undefined || denoise === null) {
-        denoise = 0.40;
+        denoise = 0.55;
       } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.35), 0.50);
+        denoise = Math.min(Math.max(Number(denoise), 0.50), 0.65);
       }
-      edgeStrength = 0.75;
-      depthStrength = 0.75;
-    } else if (renderMode === 'creative_concept') {
+      edgeStrength = 1.0;
+      depthStrength = 1.0;
+      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
+    } else if (geometryLockMode === 'balanced' || geometryLockMode === 'balanced_enhancement') {
       if (denoise === undefined || denoise === null) {
         denoise = 0.65;
       } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.55), 0.75);
+        denoise = Math.min(Math.max(Number(denoise), 0.60), 0.75);
+      }
+      edgeStrength = 0.75;
+      depthStrength = 0.75;
+      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
+    } else if (geometryLockMode === 'creative' || geometryLockMode === 'creative_concept') {
+      if (denoise === undefined || denoise === null) {
+        denoise = 0.80;
+      } else {
+        denoise = Math.min(Math.max(Number(denoise), 0.72), 0.88);
       }
       edgeStrength = 0.40;
       depthStrength = 0.40;
+      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
+    } else {
+      if (denoise === undefined || denoise === null) {
+        denoise = 0.35;
+      } else {
+        denoise = Math.min(Math.max(Number(denoise), 0.25), 0.45);
+      }
+      edgeStrength = 1.0;
+      depthStrength = 1.0;
+      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
     }
 
     finalSettings.render_mode = renderMode;
     finalSettings.geometryLockMode = renderMode;
     finalSettings.denoise = denoise;
+    console.log('[Denoise Final]', finalSettings.denoise, 'memoryApplied:', memoryApplied, 'forceRegenerate:', forceRegenerate)
     finalSettings.denoise_strength = denoise;
     finalSettings.edge_control_strength = edgeStrength;
     finalSettings.depth_control_strength = depthStrength;
@@ -715,7 +738,8 @@ export async function POST(request: Request) {
  * Returns the highest-scored match, or null if no memory exists.
  */
 async function findBestMemoryMatch(
-  project: { projectType: string | null; sceneType: string | null; stylePreference: string | null }
+  project: { projectType: string | null; sceneType: string | null; stylePreference: string | null },
+  forceRegenerate?: boolean
 ): Promise<Record<string, any> | null> {
   const projectType = (project.projectType || 'general').toLowerCase().trim();
   const sceneType = (project.sceneType || 'general').toLowerCase().trim();
@@ -763,7 +787,7 @@ async function findBestMemoryMatch(
       if (memoryValue.negative_prompt) renderSettings.negativePrompt = memoryValue.negative_prompt;
       if (memoryValue.steps) renderSettings.steps = memoryValue.steps;
       if (memoryValue.cfg_scale) renderSettings.cfg_scale = memoryValue.cfg_scale;
-      if (memoryValue.denoise !== undefined) renderSettings.denoise = memoryValue.denoise;
+      if (memoryValue.denoise !== undefined && !forceRegenerate) renderSettings.denoise = memoryValue.denoise;
       if (memoryValue.seed) renderSettings.seed = memoryValue.seed;
       if (memoryValue.style_id) renderSettings.stylePreference = memoryValue.style_id;
       if (memoryValue.geometry_lock_mode) renderSettings.geometryLockMode = memoryValue.geometry_lock_mode;

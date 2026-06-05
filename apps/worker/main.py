@@ -537,6 +537,14 @@ def get_default_finish(detected_class: str, mat_name: str) -> str:
     return defaults.get(detected_class, "Standard Finish")
 
 def process_job(conn, job):
+    try:
+        _process_job_impl(conn, job)
+    except Exception as e:
+        import traceback
+        error_msg = traceback.format_exc()
+        print(f"[FATAL ERROR] Full traceback:\n{error_msg}", flush=True, file=sys.stderr)
+
+def _process_job_impl(conn, job):
     """
     Validates job settings against capacity guardrails, applies downshift
     adjustments, then executes simulated rendering loops and logs progress
@@ -559,7 +567,7 @@ def process_job(conn, job):
     if job_type == "base_render_model":
         # Check feature flag
         if not config.BLENDER_PIPELINE_ENABLED:
-            print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} requires Blender pipeline which is disabled behind a feature flag.")
+            print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} requires Blender pipeline which is disabled behind a feature flag.", flush=True)
             cur = conn.cursor()
             try:
                 review_message = "Job requires Blender pipeline (base_render_model) which is currently disabled behind a feature flag."
@@ -577,7 +585,7 @@ def process_job(conn, job):
                 conn.commit()
             except Exception as db_err:
                 conn.rollback()
-                print(f"Failed to flag job: {db_err}", file=sys.stderr)
+                print(f"Failed to flag job: {db_err}", file=sys.stderr, flush=True)
             finally:
                 cur.close()
                 active_job_id = None
@@ -618,13 +626,13 @@ def process_job(conn, job):
             os.makedirs(workspace_dir, exist_ok=True)
             local_blend_path = os.path.join(workspace_dir, os.path.basename(file_url))
             
-            print(f"[{datetime.datetime.now().strftime('%T')}] Downloading input model from S3: {file_url} -> {local_blend_path}")
+            print(f"[{datetime.datetime.now().strftime('%T')}] Downloading input model from S3: {file_url} -> {local_blend_path}", flush=True)
             downloadFileToWorker(file_url, local_blend_path)
             
             selected_camera = settings.get("selected_camera")
             if not selected_camera:
                 # Phase 1: Camera Preview and Auto-Setup Generation
-                print(f"[{datetime.datetime.now().strftime('%T')}] No camera selection found. Generating candidates...")
+                print(f"[{datetime.datetime.now().strftime('%T')}] No camera selection found. Generating candidates...", flush=True)
                 
                 # Update progress
                 cur.execute("UPDATE render_jobs SET progress = 20 WHERE id = %s;", (job_id,))
@@ -633,7 +641,7 @@ def process_job(conn, job):
                 candidates, detected_materials = run_camera_preview_pipeline(job_id, project_id, user_id, local_blend_path)
                 
                 if detected_materials:
-                    print(f"[{datetime.datetime.now().strftime('%T')}] Analyzing {len(detected_materials)} scene materials...")
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Analyzing {len(detected_materials)} scene materials...", flush=True)
                     for item in detected_materials:
                         obj_name = item.get("object_name", "")
                         mat_name = item.get("material_name", "")
@@ -669,7 +677,7 @@ def process_job(conn, job):
                             """, (mapping_id, project_id, obj_name, detected_class, selected_material, confidence, reason))
                     
                     conn.commit()
-                    print(f"[{datetime.datetime.now().strftime('%T')}] Successfully saved material mapping guesses to database.")
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Successfully saved material mapping guesses to database.", flush=True)
 
                 # Update settings_json in the DB with the candidates
                 settings["camera_candidates"] = candidates
@@ -695,14 +703,14 @@ def process_job(conn, job):
                 # Clean up workspace
                 import shutil
                 if os.path.exists(workspace_dir):
-                    print(f"[{datetime.datetime.now().strftime('%T')}] Cleaning up workspace for job {job_id}...")
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Cleaning up workspace for job {job_id}...", flush=True)
                     shutil.rmtree(workspace_dir, ignore_errors=True)
                     
-                print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} is now waiting for user camera selection.")
+                print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} is now waiting for user camera selection.", flush=True)
                 return
 
             # Phase 2: Full Render (camera selected)
-            print(f"[{datetime.datetime.now().strftime('%T')}] Found selected camera. Proceeding with full render...")
+            print(f"[{datetime.datetime.now().strftime('%T')}] Found selected camera. Proceeding with full render...", flush=True)
             
             # Update progress
             cur.execute("UPDATE render_jobs SET progress = 30 WHERE id = %s;", (job_id,))
@@ -721,7 +729,7 @@ def process_job(conn, job):
             for slot_name, local_path in blender_result.get("outputs", {}).items():
                 s3_key = f"users/{user_id}/projects/{project_id}/outputs/blender_{job_id}_{slot_name}.png"
                 
-                print(f"[{datetime.datetime.now().strftime('%T')}] Uploading {slot_name} to S3: {s3_key}")
+                print(f"[{datetime.datetime.now().strftime('%T')}] Uploading {slot_name} to S3: {s3_key}", flush=True)
                 uploadFileFromWorker(local_path, s3_key)
                 uploaded_outputs[slot_name] = s3_key
                 
@@ -749,7 +757,7 @@ def process_job(conn, job):
             
             # Clean up local workspace folder after successful execution
             if os.path.exists(workspace_dir):
-                print(f"[{datetime.datetime.now().strftime('%T')}] Cleaning up workspace for job {job_id}...")
+                print(f"[{datetime.datetime.now().strftime('%T')}] Cleaning up workspace for job {job_id}...", flush=True)
                 shutil.rmtree(workspace_dir, ignore_errors=True)
 
             # Update to completed status
@@ -779,12 +787,12 @@ def process_job(conn, job):
             conn.commit()
         except Exception as e:
             conn.rollback()
-            print(f"Blender pipeline execution error: {e}", file=sys.stderr)
+            print(f"Blender pipeline execution error: {e}", file=sys.stderr, flush=True)
             
             # Clean up local workspace folder on failure
             import shutil
             if os.path.exists(workspace_dir):
-                print(f"[{datetime.datetime.now().strftime('%T')}] Cleaning up workspace for job {job_id} after failure...")
+                print(f"[{datetime.datetime.now().strftime('%T')}] Cleaning up workspace for job {job_id} after failure...", flush=True)
                 shutil.rmtree(workspace_dir, ignore_errors=True)
                 
             # Log failure to database
@@ -808,7 +816,7 @@ def process_job(conn, job):
                         VALUES (%s, %s, 'failed', %s, '{}', %s);
                     """, (event_id, job_id, f"Blender pipeline execution failed (Retry {new_retry}/{max_retries}): {e}", datetime.datetime.now(datetime.timezone.utc)))
                     conn.commit()
-                    print(f"[{datetime.datetime.now().strftime('%T')}] Rescheduled job {job_id} for retry ({new_retry}/{max_retries}).")
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Rescheduled job {job_id} for retry ({new_retry}/{max_retries}).", flush=True)
                 else:
                     cur_fail.execute("""
                         UPDATE render_jobs
@@ -822,9 +830,9 @@ def process_job(conn, job):
                         VALUES (%s, %s, 'failed', %s, '{}', %s);
                     """, (event_id, job_id, f"Blender pipeline execution failed permanently (Max retries exceeded): {e}", datetime.datetime.now(datetime.timezone.utc)))
                     conn.commit()
-                    print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} failed permanently (Max retries exceeded).")
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} failed permanently (Max retries exceeded).", flush=True)
             except Exception as log_err:
-                print(f"Failed to log job failure details: {log_err}", file=sys.stderr)
+                print(f"Failed to log job failure details: {log_err}", file=sys.stderr, flush=True)
                 if conn:
                     conn.rollback()
             finally:
@@ -839,13 +847,13 @@ def process_job(conn, job):
     clamped_settings, adjustments = downshift_job_settings(raw_settings, capacity_profile)
 
     if adjustments:
-        print(f"[{datetime.datetime.now().strftime('%T')}] Capacity adjustments applied for job {job_id}:")
+        print(f"[{datetime.datetime.now().strftime('%T')}] Capacity adjustments applied for job {job_id}:", flush=True)
         for adj in adjustments:
-            print(f"  -> {adj}")
+            print(f"  -> {adj}", flush=True)
 
     # If the job requires features the laptop profile cannot handle, flag it
     if requires_review(adjustments):
-        print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} flagged as needs_review due to unsupported features.")
+        print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} flagged as needs_review due to unsupported features.", flush=True)
         cur = conn.cursor()
         try:
             review_message = " | ".join(a for a in adjustments if a.startswith("[NEEDS_REVIEW]"))
@@ -868,7 +876,7 @@ def process_job(conn, job):
             conn.commit()
         except Exception as e:
             conn.rollback()
-            print(f"Failed to flag job for review: {e}", file=sys.stderr)
+            print(f"Failed to flag job for review: {e}", file=sys.stderr, flush=True)
         finally:
             cur.close()
             active_job_id = None
@@ -891,11 +899,11 @@ def process_job(conn, job):
             conn.commit()
         except Exception as e:
             conn.rollback()
-            print(f"Failed to log downshift event: {e}", file=sys.stderr)
+            print(f"Failed to log downshift event: {e}", file=sys.stderr, flush=True)
         finally:
             cur_adj.close()
     
-    print(f"[{datetime.datetime.now().strftime('%T')}] Processing Render Job: {job_id} for Project: {project_id}")
+    print(f"[{datetime.datetime.now().strftime('%T')}] Processing Render Job: {job_id} for Project: {project_id}", flush=True)
     
     cur = conn.cursor()
     try:
@@ -1038,7 +1046,7 @@ def process_job(conn, job):
         local_input_filename = f"input_{os.path.basename(file_url)}"
         local_input_path = os.path.join(workspace_dir, local_input_filename)
         
-        print(f"[{datetime.datetime.now().strftime('%T')}] Downloading input image from S3: {file_url} -> {local_input_path}")
+        print(f"[{datetime.datetime.now().strftime('%T')}] Downloading input image from S3: {file_url} -> {local_input_path}", flush=True)
         downloadFileToWorker(file_url, local_input_path)
 
         local_control_path = None
@@ -1063,7 +1071,7 @@ def process_job(conn, job):
                     local_control_filename += ".png"
                 local_control_path = os.path.join(workspace_dir, local_control_filename)
                 
-                print(f"[{datetime.datetime.now().strftime('%T')}] Generating lightweight Canny edge control map locally...")
+                print(f"[{datetime.datetime.now().strftime('%T')}] Generating lightweight Canny edge control map locally...", flush=True)
                 with Image.open(local_input_path) as img:
                     gray = img.convert("L")
                     blurred = gray.filter(ImageFilter.GaussianBlur(radius=1.2))
@@ -1073,12 +1081,12 @@ def process_job(conn, job):
                     final_control = crisp_edges.convert("RGB")
                     final_control.save(local_control_path, "PNG")
                     
-                print(f"[{datetime.datetime.now().strftime('%T')}] Canny edge map generated: {local_control_path}")
+                print(f"[{datetime.datetime.now().strftime('%T')}] Canny edge map generated: {local_control_path}", flush=True)
                 
                 # Upload control map to object storage
                 timestamp_sec = int(time.time())
                 s3_control_key = f"users/{user_id}/projects/{project_id}/previews/canny_{job_id}_{timestamp_sec}.png"
-                print(f"[{datetime.datetime.now().strftime('%T')}] Uploading control map to S3: {s3_control_key}")
+                print(f"[{datetime.datetime.now().strftime('%T')}] Uploading control map to S3: {s3_control_key}", flush=True)
                 uploadFileFromWorker(local_control_path, s3_control_key)
                 
                 # Register in project_files database
@@ -1119,15 +1127,15 @@ def process_job(conn, job):
                         datetime.datetime.now(datetime.timezone.utc)
                     ))
                     conn.commit()
-                    print(f"[{datetime.datetime.now().strftime('%T')}] Registered control map in DB: {file_id}")
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Registered control map in DB: {file_id}", flush=True)
                 except Exception as db_err:
                     conn.rollback()
-                    print(f"Failed to save control map metadata to database: {db_err}", file=sys.stderr)
+                    print(f"Failed to save control map metadata to database: {db_err}", file=sys.stderr, flush=True)
                 finally:
                     cur_file.close()
                     
             except Exception as preprocess_err:
-                print(f"Failed to preprocess control map: {preprocess_err}", file=sys.stderr)
+                print(f"Failed to preprocess control map: {preprocess_err}", file=sys.stderr, flush=True)
                 local_control_path = None
                 s3_control_key = None
 
@@ -1139,7 +1147,7 @@ def process_job(conn, job):
                 local_depth_filename = f"depth_{job_id}.png"
                 local_depth_control_path = os.path.join(workspace_dir, local_depth_filename)
 
-                print(f"[{datetime.datetime.now().strftime('%T')}] Generating lightweight depth map locally...")
+                print(f"[{datetime.datetime.now().strftime('%T')}] Generating lightweight depth map locally...", flush=True)
                 depth_map = None
                 with Image.open(local_input_path) as img:
                     # Convert to grayscale
@@ -1153,18 +1161,18 @@ def process_job(conn, job):
                     depth_map = enhancer.enhance(1.5)
 
                 if depth_map is None:
-                    print("Warning: Depth map result is None.", file=sys.stderr)
+                    print("Warning: Depth map result is None.", file=sys.stderr, flush=True)
                     local_depth_control_path = None
                 else:
                     # Save as RGB for ControlNet compatibility
                     depth_map.convert("RGB").save(local_depth_control_path, "PNG")
 
-                    print(f"[{datetime.datetime.now().strftime('%T')}] Depth map generated: {local_depth_control_path}")
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Depth map generated: {local_depth_control_path}", flush=True)
 
                     # Upload depth map to object storage
                     timestamp_sec = int(time.time())
                     s3_depth_key = f"users/{user_id}/projects/{project_id}/previews/depth_{job_id}_{timestamp_sec}.png"
-                    print(f"[{datetime.datetime.now().strftime('%T')}] Uploading depth map to S3: {s3_depth_key}")
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Uploading depth map to S3: {s3_depth_key}", flush=True)
                     uploadFileFromWorker(local_depth_control_path, s3_depth_key)
 
                     # Register in project_files database
@@ -1205,15 +1213,15 @@ def process_job(conn, job):
                             datetime.datetime.now(datetime.timezone.utc)
                         ))
                         conn.commit()
-                        print(f"[{datetime.datetime.now().strftime('%T')}] Registered depth map in DB: {depth_file_id}")
+                        print(f"[{datetime.datetime.now().strftime('%T')}] Registered depth map in DB: {depth_file_id}", flush=True)
                     except Exception as db_err:
                         conn.rollback()
-                        print(f"Failed to save depth map metadata to database: {db_err}", file=sys.stderr)
+                        print(f"Failed to save depth map metadata to database: {db_err}", file=sys.stderr, flush=True)
                     finally:
                         cur_depth_file.close()
 
             except Exception as depth_err:
-                print(f"Failed to preprocess depth map: {depth_err}", file=sys.stderr)
+                print(f"Failed to preprocess depth map: {depth_err}", file=sys.stderr, flush=True)
                 local_depth_control_path = None
                 s3_depth_key = None
 
@@ -1230,7 +1238,7 @@ def process_job(conn, job):
                 orig_width, orig_height = img.size
                 width, height = orig_width, orig_height
         except Exception as img_err:
-            print(f"Failed to read image dimensions: {img_err}. Using 768px default limit.", file=sys.stderr)
+            print(f"Failed to read image dimensions: {img_err}. Using 768px default limit.", file=sys.stderr, flush=True)
 
         # Clamp dimensions preserving aspect ratio to fit within capacity limit
         if is_upscale:
@@ -1261,28 +1269,28 @@ def process_job(conn, job):
                     time.sleep(2)
 
         # 7. Initialize ComfyUI client and upload input image, control map, and depth map
-        print(f"[{datetime.datetime.now().strftime('%T')}] Initializing ComfyUI client at {config.COMFYUI_URL}...")
+        print(f"[{datetime.datetime.now().strftime('%T')}] Initializing ComfyUI client at {config.COMFYUI_URL}...", flush=True)
         comfy_client = ComfyUIClient(config.COMFYUI_URL)
         comfy_client.check_health()
         
-        print(f"[{datetime.datetime.now().strftime('%T')}] Uploading input image to ComfyUI...")
+        print(f"[{datetime.datetime.now().strftime('%T')}] Uploading input image to ComfyUI...", flush=True)
         comfyui_input_name = comfy_client.upload_image(local_input_path)
         
         comfyui_control_name = None
         if local_control_path:
             try:
-                print(f"[{datetime.datetime.now().strftime('%T')}] Uploading canny control map image to ComfyUI...")
+                print(f"[{datetime.datetime.now().strftime('%T')}] Uploading canny control map image to ComfyUI...", flush=True)
                 comfyui_control_name = comfy_client.upload_image(local_control_path)
             except Exception as comfy_upload_err:
-                print(f"Failed to upload control map to ComfyUI: {comfy_upload_err}", file=sys.stderr)
+                print(f"Failed to upload control map to ComfyUI: {comfy_upload_err}", file=sys.stderr, flush=True)
 
         comfyui_depth_name = None
         if local_depth_control_path:
             try:
-                print(f"[{datetime.datetime.now().strftime('%T')}] Uploading depth map image to ComfyUI...")
+                print(f"[{datetime.datetime.now().strftime('%T')}] Uploading depth map image to ComfyUI...", flush=True)
                 comfyui_depth_name = comfy_client.upload_image(local_depth_control_path)
             except Exception as comfy_upload_err:
-                print(f"Failed to upload depth map to ComfyUI: {comfy_upload_err}", file=sys.stderr)
+                print(f"Failed to upload depth map to ComfyUI: {comfy_upload_err}", file=sys.stderr, flush=True)
 
         # 8. Render variations sequentially
         if not is_upscale:
@@ -1315,9 +1323,9 @@ def process_job(conn, job):
                     "faithful": 0.35
                 }
                 denoise = mode_denoise_map.get(geometry_lock_mode, 0.60)
-                print(f"[Denoise Trace] Denoise resolved to {denoise} from mode_denoise_map (mode: {geometry_lock_mode})")
+                print(f"[Denoise Trace] Denoise resolved to {denoise} from mode_denoise_map (mode: {geometry_lock_mode})", flush=True)
             else:
-                print(f"[Denoise Trace] Denoise resolved to {denoise} from job settings / preference memory")
+                print(f"[Denoise Trace] Denoise resolved to {denoise} from job settings / preference memory", flush=True)
                 
             clamped_settings["denoise"] = denoise
             clamped_settings["geometryLockMode"] = geometry_lock_mode
@@ -1328,7 +1336,7 @@ def process_job(conn, job):
             
         prompt_brain_provider = clamped_settings.get("promptBrainProvider") or clamped_settings.get("prompt_brain_provider") or "unknown"
         
-        print(f"[{datetime.datetime.now().strftime('%T')}] Launching sequential variation loops ({variations} total)...")
+        print(f"[{datetime.datetime.now().strftime('%T')}] Launching sequential variation loops ({variations} total)...", flush=True)
         
         for idx in range(variations):
             if not running:
@@ -1356,7 +1364,7 @@ def process_job(conn, job):
             else:
                 v_seed = seed = v_seed  # Use exact same seed
                 
-            print(f"[{datetime.datetime.now().strftime('%T')}] Rendering variation {idx + 1}/{variations} with seed {v_seed}")
+            print(f"[{datetime.datetime.now().strftime('%T')}] Rendering variation {idx + 1}/{variations} with seed {v_seed}", flush=True)
             
             edge_control_strength = clamped_settings.get("edge_control_strength") if clamped_settings else None
             depth_control_strength = clamped_settings.get("depth_control_strength") if clamped_settings else None
@@ -1391,7 +1399,7 @@ def process_job(conn, job):
             
             # Download completed render image
             filename_only = os.path.basename(comfyui_output_path)
-            print(f"[{datetime.datetime.now().strftime('%T')}] Fetching variation output from ComfyUI API: {filename_only}")
+            print(f"[{datetime.datetime.now().strftime('%T')}] Fetching variation output from ComfyUI API: {filename_only}", flush=True)
             output_bytes = comfy_client.download_output(filename_only)
             
             with open(local_output_path, 'wb') as f_out:
@@ -1403,7 +1411,7 @@ def process_job(conn, job):
             if not is_upscale:
                 try:
                     drift_score = calculate_geometry_drift_score(local_input_path, local_output_path)
-                    print(f"[{datetime.datetime.now().strftime('%T')}] [Geometry Check] Calculated geometry drift score for variation {idx}: {drift_score:.4f}")
+                    print(f"[{datetime.datetime.now().strftime('%T')}] [Geometry Check] Calculated geometry drift score for variation {idx}: {drift_score:.4f}", flush=True)
                     
                     threshold = clamped_settings.get("geometry_drift_threshold", 0.88)
                     is_strict = (clamped_settings.get("render_mode") == "strict_structure" or 
@@ -1412,13 +1420,13 @@ def process_job(conn, job):
                     if is_strict:
                         if drift_score < threshold:
                             structure_status = "failed_structure_check"
-                            print(f"[Geometry Check] WARNING: Variation {idx} failed structure check (Score {drift_score:.4f} < Threshold {threshold})")
+                            print(f"[Geometry Check] WARNING: Variation {idx} failed structure check (Score {drift_score:.4f} < Threshold {threshold})", flush=True)
                         else:
                             structure_status = "passed"
                     else:
                         structure_status = "passed"
                 except Exception as check_err:
-                    print(f"[Geometry Check] Error calculating geometry drift score: {check_err}", file=sys.stderr)
+                    print(f"[Geometry Check] Error calculating geometry drift score: {check_err}", file=sys.stderr, flush=True)
                     drift_score = 1.0
                     structure_status = "passed"
             
@@ -1450,7 +1458,7 @@ def process_job(conn, job):
                     regen_job_id = f"job_{int(time.time() * 1000)}_{random.randint(0, 999)}"
                     regen_settings_json = json.dumps(regen_settings)
                     
-                    print(f"[Geometry Check] Automatically queueing a new regeneration job {regen_job_id} with lower denoise={new_denoise:.2f} and stronger structure lock")
+                    print(f"[Geometry Check] Automatically queueing a new regeneration job {regen_job_id} with lower denoise={new_denoise:.2f} and stronger structure lock", flush=True)
                     
                     cur_regen = conn.cursor()
                     try:
@@ -1479,11 +1487,11 @@ def process_job(conn, job):
                         conn.commit()
                     except Exception as regen_db_err:
                         conn.rollback()
-                        print(f"Failed to queue auto-regeneration job in DB: {regen_db_err}", file=sys.stderr)
+                        print(f"Failed to queue auto-regeneration job in DB: {regen_db_err}", file=sys.stderr, flush=True)
                     finally:
                         cur_regen.close()
                 except Exception as regen_err:
-                    print(f"Failed to compile auto-regeneration settings: {regen_err}", file=sys.stderr)
+                    print(f"Failed to compile auto-regeneration settings: {regen_err}", file=sys.stderr, flush=True)
                 
             # Upload render output to object storage
             timestamp_sec = int(time.time())
@@ -1492,7 +1500,7 @@ def process_job(conn, job):
             else:
                 s3_output_key = f"users/{user_id}/projects/{project_id}/outputs/render_{job_id}_upscaled_{timestamp_sec}.png"
             
-            print(f"[{datetime.datetime.now().strftime('%T')}] Uploading output to S3: {s3_output_key}")
+            print(f"[{datetime.datetime.now().strftime('%T')}] Uploading output to S3: {s3_output_key}", flush=True)
             uploadFileFromWorker(local_output_path, s3_output_key)
             
             if not is_upscale:
@@ -1573,13 +1581,13 @@ def process_job(conn, job):
     except Exception as e:
         conn.rollback()
         import traceback
-        print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} encountered execution error: {e}", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
+        error_msg = traceback.format_exc()
+        print(f"[FATAL ERROR] Full traceback:\n{error_msg}", flush=True, file=sys.stderr)
         
         # Clean up partial workspace
         workspace_dir = os.path.join(config.LOCAL_WORKSPACE_ROOT, "jobs", job_id)
         if os.path.exists(workspace_dir):
-            print(f"[{datetime.datetime.now().strftime('%T')}] Cleaning up partial workspace for job {job_id}...")
+            print(f"[{datetime.datetime.now().strftime('%T')}] Cleaning up partial workspace for job {job_id}...", flush=True)
             import shutil
             shutil.rmtree(workspace_dir, ignore_errors=True)
             
@@ -1603,7 +1611,7 @@ def process_job(conn, job):
                     VALUES (%s, %s, 'failed', %s, '{}', %s);
                 """, (event_id, job_id, f"Render execution failed (Retry {new_retry}/{max_retries}): {e}", datetime.datetime.now(datetime.timezone.utc)))
                 conn.commit()
-                print(f"[{datetime.datetime.now().strftime('%T')}] Rescheduled job {job_id} for retry ({new_retry}/{max_retries}).")
+                print(f"[{datetime.datetime.now().strftime('%T')}] Rescheduled job {job_id} for retry ({new_retry}/{max_retries}).", flush=True)
             else:
                 cur_fail.execute("""
                     UPDATE render_jobs
@@ -1617,9 +1625,9 @@ def process_job(conn, job):
                     VALUES (%s, %s, 'failed', %s, '{}', %s);
                 """, (event_id, job_id, f"Render execution failed permanently (Max retries exceeded): {e}", datetime.datetime.now(datetime.timezone.utc)))
                 conn.commit()
-                print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} failed permanently (Max retries exceeded).")
+                print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} failed permanently (Max retries exceeded).", flush=True)
         except Exception as log_err:
-            print(f"Failed to log job failure details: {log_err}", file=sys.stderr)
+            print(f"Failed to log job failure details: {log_err}", file=sys.stderr, flush=True)
             if conn:
                 conn.rollback()
         finally:
