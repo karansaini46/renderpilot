@@ -186,6 +186,8 @@ class ComfyUIClient:
         geometry_lock_mode: str = 'accurate',
         control_image: str | None = None,
         prompt_brain_provider: str = 'unknown',
+        edge_control_strength: float | None = None,
+        depth_control_strength: float | None = None,
     ) -> dict:
         """
         Injects render parameters into a workflow template by scanning
@@ -212,11 +214,20 @@ class ComfyUIClient:
             The modified workflow dict.
         """
         # Map geometry lock mode to ComfyUI variables
-        mode = (geometry_lock_mode or 'accurate').lower()
+        mode = (geometry_lock_mode or 'strict_structure').lower()
         control_strength = 0.9
         prompt_constraint = ""
 
-        if mode == 'creative':
+        if mode == 'strict_structure':
+            control_strength = 1.0
+            prompt_constraint = "photorealistic architectural render optimization, realistic materials, natural lighting, accurate shadows, glass reflections, realistic texture detail, professional archviz polish, same building geometry, same camera composition"
+        elif mode == 'balanced_enhancement':
+            control_strength = 0.75
+            prompt_constraint = "preserves composition, balanced style changes"
+        elif mode == 'creative_concept':
+            control_strength = 0.40
+            prompt_constraint = "more visual freedom, creative details, concept rendering"
+        elif mode == 'creative':
             control_strength = 0.4
             prompt_constraint = "more visual freedom, creative details"
         elif mode == 'balanced':
@@ -229,22 +240,32 @@ class ComfyUIClient:
             control_strength = 1.0
             prompt_constraint = "strongest preservation of contours, exact geometry, technical blueprint match"
         else:
-            control_strength = 0.9
-            prompt_constraint = "strict composition preservation, realistic structure, client-ready layout"
+            control_strength = 1.0
+            prompt_constraint = "photorealistic architectural render optimization, realistic materials, natural lighting, accurate shadows, glass reflections, realistic texture detail, professional archviz polish, same building geometry, same camera composition"
+
+        # Resolve edge and depth control strengths
+        final_edge_strength = edge_control_strength if edge_control_strength is not None else control_strength
+        final_depth_strength = depth_control_strength if depth_control_strength is not None else control_strength
 
         # Resolve final denoise: respect explicit setting if present, else use safe defaults
         if denoise is not None:
             final_denoise = denoise
         else:
-            if mode == 'creative':
+            if mode == 'strict_structure':
+                final_denoise = 0.25
+            elif mode == 'balanced_enhancement':
+                final_denoise = 0.40
+            elif mode == 'creative_concept':
+                final_denoise = 0.65
+            elif mode == 'creative':
                 final_denoise = 0.60
             elif mode == 'balanced':
                 final_denoise = 0.40
             else:  # accurate, faithful, technical, or default
-                final_denoise = 0.30
+                final_denoise = 0.25
 
         # Log final parameters
-        print(f"[ComfyUI Client] Final parameters: denoise={final_denoise}, geometryLockMode={mode}, control_strength={control_strength}, promptBrainProvider={prompt_brain_provider}")
+        print(f"[ComfyUI Client] Final parameters: denoise={final_denoise}, geometryLockMode={mode}, control_strength={control_strength}, edge_strength={final_edge_strength}, depth_strength={final_depth_strength}, promptBrainProvider={prompt_brain_provider}")
 
         for node_id, node in workflow.items():
             class_type = node.get('class_type', '')
@@ -264,7 +285,13 @@ class ComfyUIClient:
             # ControlNet apply nodes — inject control strength
             if class_type in ('ControlNetApply', 'ControlNetApplyAdvanced'):
                 if 'strength' in inputs:
-                    inputs['strength'] = control_strength
+                    meta_title = node.get('_meta', {}).get('title', '').lower()
+                    if 'canny' in meta_title or 'edge' in meta_title:
+                        inputs['strength'] = final_edge_strength
+                    elif 'depth' in meta_title:
+                        inputs['strength'] = final_depth_strength
+                    else:
+                        inputs['strength'] = control_strength
 
             # CLIP Text Encode nodes — inject prompts with constraints
             # Convention: node title or _meta.title containing "negative" gets negative prompt
@@ -637,6 +664,8 @@ class ComfyUIClient:
         comfyui_output_dir: str | None = None,
         on_progress=None,
         prompt_brain_provider: str = 'unknown',
+        edge_control_strength: float | None = None,
+        depth_control_strength: float | None = None,
     ) -> list[str]:
         """
         End-to-end render pipeline: load template, inject params, submit,
@@ -686,6 +715,8 @@ class ComfyUIClient:
             geometry_lock_mode=geometry_lock_mode,
             control_image=control_image,
             prompt_brain_provider=prompt_brain_provider,
+            edge_control_strength=edge_control_strength,
+            depth_control_strength=depth_control_strength,
         )
 
         # Step 3: Submit workflow

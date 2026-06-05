@@ -16,6 +16,38 @@ from storage import downloadFileToWorker, uploadFileFromWorker
 from comfyui_client import ComfyUIClient, ComfyUIConnectionError, ComfyUIExecutionError
 from blender_pipeline import run_blender_pipeline, run_camera_preview_pipeline
 
+def calculate_geometry_drift_score(input_image_path: str, output_image_path: str) -> float:
+    """
+    Calculates structural similarity (1.0 - mean diff) between edge maps of input and output.
+    Uses Pillow-only filters: GaussianBlur, FIND_EDGES, and binary thresholding.
+    """
+    from PIL import Image, ImageFilter, ImageChops
+    try:
+        with Image.open(input_image_path) as img1, Image.open(output_image_path) as img2:
+            size = (512, 512)
+            img1_resized = img1.resize(size).convert("L")
+            img2_resized = img2.resize(size).convert("L")
+
+            # Apply identical structure-extracting edge filters
+            blurred1 = img1_resized.filter(ImageFilter.GaussianBlur(radius=1.2))
+            edges1 = blurred1.filter(ImageFilter.FIND_EDGES).point(lambda p: 255 if p > 25 else 0)
+
+            blurred2 = img2_resized.filter(ImageFilter.GaussianBlur(radius=1.2))
+            edges2 = blurred2.filter(ImageFilter.FIND_EDGES).point(lambda p: 255 if p > 25 else 0)
+
+            # Absolute difference map
+            diff = ImageChops.difference(edges1, edges2)
+            stat = diff.getdata()
+            total_diff = sum(stat)
+            num_pixels = len(stat)
+            mean_diff = total_diff / num_pixels
+
+            similarity = 1.0 - (mean_diff / 255.0)
+            return float(similarity)
+    except Exception as e:
+        print(f"[Geometry Check] Error calculating geometry drift: {e}", file=sys.stderr)
+        return 1.0
+
 # Control flag for grace shutdown handling
 running = True
 active_job_id = None
@@ -1139,24 +1171,25 @@ def process_job(conn, job):
         cfg_scale = clamped_settings.get("cfg_scale", 7.0)
         
         if not is_upscale:
-            # Resolve geometry lock mode
-            geometry_lock_mode = (clamped_settings.get("geometryLockMode") or clamped_settings.get("geometry_lock_mode") or "accurate").lower()
+            # Resolve geometry lock mode and render mode
+            geometry_lock_mode = (clamped_settings.get("render_mode") or clamped_settings.get("geometryLockMode") or clamped_settings.get("geometry_lock_mode") or "strict_structure").lower()
             
             # Use safe defaults only when denoise is missing
             denoise = clamped_settings.get("denoise")
             if denoise is None:
-                if geometry_lock_mode == "creative":
-                    denoise = 0.60
-                elif geometry_lock_mode == "balanced":
+                if geometry_lock_mode == "creative_concept" or geometry_lock_mode == "creative":
+                    denoise = 0.65
+                elif geometry_lock_mode == "balanced_enhancement" or geometry_lock_mode == "balanced":
                     denoise = 0.40
-                else:  # accurate, faithful, technical, or default
-                    denoise = 0.30
+                else:  # strict_structure or default
+                    denoise = 0.25
                 
             clamped_settings["denoise"] = denoise
             clamped_settings["geometryLockMode"] = geometry_lock_mode
+            clamped_settings["render_mode"] = geometry_lock_mode
         else:
-            geometry_lock_mode = "accurate"
-            denoise = clamped_settings.get("denoise", 0.30)
+            geometry_lock_mode = "strict_structure"
+            denoise = clamped_settings.get("denoise", 0.25)
             
         prompt_brain_provider = clamped_settings.get("promptBrainProvider") or clamped_settings.get("prompt_brain_provider") or "unknown"
         
@@ -1190,6 +1223,9 @@ def process_job(conn, job):
                 
             print(f"[{datetime.datetime.now().strftime('%T')}] Rendering variation {idx + 1}/{variations} with seed {v_seed}")
             
+            edge_control_strength = clamped_settings.get("edge_control_strength")
+            depth_control_strength = clamped_settings.get("depth_control_strength")
+
             output_paths = comfy_client.render(
                 template_name="img2img_default",
                 input_image=comfyui_input_name,
@@ -1205,7 +1241,9 @@ def process_job(conn, job):
                 geometry_lock_mode=geometry_lock_mode,
                 control_image=comfyui_control_name,
                 on_progress=on_comfyui_progress,
-                prompt_brain_provider=prompt_brain_provider
+                prompt_brain_provider=prompt_brain_provider,
+                edge_control_strength=edge_control_strength,
+                depth_control_strength=depth_control_strength
             )
             
             if not output_paths:
@@ -1222,6 +1260,94 @@ def process_job(conn, job):
             
             with open(local_output_path, 'wb') as f_out:
                 f_out.write(output_bytes)
+
+            # Run Geometry Drift Check
+            drift_score = None
+            structure_status = None
+            if not is_upscale:
+                try:
+                    drift_score = calculate_geometry_drift_score(local_input_path, local_output_path)
+                    print(f"[{datetime.datetime.now().strftime('%T')}] [Geometry Check] Calculated geometry drift score for variation {idx}: {drift_score:.4f}")
+                    
+                    threshold = clamped_settings.get("geometry_drift_threshold", 0.88)
+                    is_strict = (clamped_settings.get("render_mode") == "strict_structure" or 
+                                 clamped_settings.get("geometryLockMode") == "strict_structure")
+                    
+                    if is_strict:
+                        if drift_score < threshold:
+                            structure_status = "failed_structure_check"
+                            print(f"[Geometry Check] WARNING: Variation {idx} failed structure check (Score {drift_score:.4f} < Threshold {threshold})")
+                        else:
+                            structure_status = "passed"
+                    else:
+                        structure_status = "passed"
+                except Exception as check_err:
+                    print(f"[Geometry Check] Error calculating geometry drift score: {check_err}", file=sys.stderr)
+                    drift_score = 1.0
+                    structure_status = "passed"
+            
+            # Save check details in settings
+            clamped_settings["geometry_drift_score"] = drift_score
+            clamped_settings["structure_check_status"] = structure_status
+
+            if structure_status == "failed_structure_check":
+                try:
+                    # Create regeneration settings
+                    regen_settings = clamped_settings.copy()
+                    
+                    # Lower denoise by 0.05, clamp to minimum 0.15
+                    old_denoise = clamped_settings.get("denoise_strength") or clamped_settings.get("denoise") or 0.25
+                    new_denoise = max(float(old_denoise) - 0.05, 0.15)
+                    
+                    regen_settings["denoise"] = new_denoise
+                    regen_settings["denoise_strength"] = new_denoise
+                    
+                    # Stronger structure control: set canny and depth control strengths to 1.0
+                    regen_settings["edge_control_strength"] = 1.0
+                    regen_settings["depth_control_strength"] = 1.0
+                    
+                    # Reset drift score and status
+                    regen_settings["geometry_drift_score"] = None
+                    regen_settings["structure_check_status"] = None
+                    regen_settings["is_auto_regenerated"] = True
+                    
+                    regen_job_id = f"job_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                    regen_settings_json = json.dumps(regen_settings)
+                    
+                    print(f"[Geometry Check] Automatically queueing a new regeneration job {regen_job_id} with lower denoise={new_denoise:.2f} and stronger structure lock")
+                    
+                    cur_regen = conn.cursor()
+                    try:
+                        cur_regen.execute("""
+                            INSERT INTO render_jobs (id, project_id, status, progress, settings_json, created_at)
+                            VALUES (%s, %s, 'queued', 0, %s, %s);
+                        """, (
+                            regen_job_id,
+                            project_id,
+                            regen_settings_json,
+                            datetime.datetime.now(datetime.timezone.utc)
+                        ))
+                        
+                        # Log the queued event
+                        regen_event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                        cur_regen.execute("""
+                            INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
+                            VALUES (%s, %s, 'queued', %s, %s, %s);
+                        """, (
+                            regen_event_id,
+                            regen_job_id,
+                            f"Auto-regenerating render due to structure lock threshold failure (drift score: {drift_score:.4f}).",
+                            regen_settings_json,
+                            datetime.datetime.now(datetime.timezone.utc)
+                        ))
+                        conn.commit()
+                    except Exception as regen_db_err:
+                        conn.rollback()
+                        print(f"Failed to queue auto-regeneration job in DB: {regen_db_err}", file=sys.stderr)
+                    finally:
+                        cur_regen.close()
+                except Exception as regen_err:
+                    print(f"Failed to compile auto-regeneration settings: {regen_err}", file=sys.stderr)
                 
             # Upload render output to object storage
             timestamp_sec = int(time.time())
@@ -1293,12 +1419,12 @@ def process_job(conn, job):
                 ))
             conn.commit()
 
-        # Update final job state as completed
+        # Update final job state as completed and save settings_json
         cur.execute("""
             UPDATE render_jobs
-            SET status = 'completed', progress = 100, completed_at = %s
+            SET status = 'completed', progress = 100, settings_json = %s, completed_at = %s
             WHERE id = %s;
-        """, (datetime.datetime.now(datetime.timezone.utc), job_id))
+        """, (json.dumps(clamped_settings), datetime.datetime.now(datetime.timezone.utc), job_id))
         
         event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
         event_msg = 'Render variations execution completed. All outputs registered.' if not is_upscale else f'Render {render_id_to_upscale} upscale completed.'

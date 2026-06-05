@@ -539,15 +539,56 @@ export async function POST(request: Request) {
     finalSettings.sceneType = sceneType;
     finalSettings.materialChoices = combinedMaterials;
     finalSettings.renderMode = userSettings.job_type || userSettings.jobType || composerResult.renderMode;
-    finalSettings.denoise = userSettings.denoise !== undefined ? userSettings.denoise : composerResult.denoise;
-    
-    // Validate and set geometryLockMode
-    let geometryLockMode = userSettings.geometryLockMode || finalSettings.geometryLockMode || composerResult.geometryLockMode || 'balanced';
-    const validModes = ['creative', 'balanced', 'accurate', 'technical'];
-    if (!validModes.includes(geometryLockMode.toLowerCase())) {
-      geometryLockMode = 'balanced';
+    // Resolve mode and parameters
+    let renderMode = userSettings.geometryLockMode || finalSettings.geometryLockMode || composerResult.geometryLockMode || 'strict_structure';
+    if (renderMode === 'strict' || renderMode === 'accurate' || renderMode === 'technical' || renderMode === 'strict_structure') {
+      renderMode = 'strict_structure';
+    } else if (renderMode === 'balanced' || renderMode === 'balanced_enhancement') {
+      renderMode = 'balanced_enhancement';
+    } else if (renderMode === 'creative' || renderMode === 'creative_concept') {
+      renderMode = 'creative_concept';
+    } else {
+      renderMode = 'strict_structure';
     }
-    finalSettings.geometryLockMode = geometryLockMode.toLowerCase();
+
+    let denoise = userSettings.denoise !== undefined ? userSettings.denoise : composerResult.denoise;
+    let edgeStrength = 1.0;
+    let depthStrength = 1.0;
+
+    if (renderMode === 'strict_structure') {
+      if (denoise === undefined || denoise === null) {
+        denoise = 0.25;
+      } else {
+        denoise = Math.min(Math.max(Number(denoise), 0.20), 0.35);
+      }
+      edgeStrength = 1.0;
+      depthStrength = 1.0;
+    } else if (renderMode === 'balanced_enhancement') {
+      if (denoise === undefined || denoise === null) {
+        denoise = 0.40;
+      } else {
+        denoise = Math.min(Math.max(Number(denoise), 0.35), 0.50);
+      }
+      edgeStrength = 0.75;
+      depthStrength = 0.75;
+    } else if (renderMode === 'creative_concept') {
+      if (denoise === undefined || denoise === null) {
+        denoise = 0.65;
+      } else {
+        denoise = Math.min(Math.max(Number(denoise), 0.55), 0.75);
+      }
+      edgeStrength = 0.40;
+      depthStrength = 0.40;
+    }
+
+    finalSettings.render_mode = renderMode;
+    finalSettings.geometryLockMode = renderMode;
+    finalSettings.denoise = denoise;
+    finalSettings.denoise_strength = denoise;
+    finalSettings.edge_control_strength = edgeStrength;
+    finalSettings.depth_control_strength = depthStrength;
+    finalSettings.geometry_drift_score = null;
+    finalSettings.structure_check_status = null;
     
     // Meta mappings to setting JSON
     finalSettings.materialMappings = analysisResult!.material_mappings;

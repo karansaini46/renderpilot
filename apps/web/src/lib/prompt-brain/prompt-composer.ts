@@ -93,8 +93,8 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
   const { analysis, stylePreset, renderMode, promptModifier, memoryPrompt } = input;
 
   const sceneType = analysis.scene_type || 'Exterior';
-  const geometryLockMode = renderMode || analysis.suggested_geometry_lock || stylePreset.defaultGeometryLockMode || 'balanced';
-  const isCreative = geometryLockMode.toLowerCase() === 'creative';
+  const geometryLockMode = renderMode || analysis.suggested_geometry_lock || stylePreset.defaultGeometryLockMode || 'strict_structure';
+  const isCreative = geometryLockMode.toLowerCase() === 'creative' || geometryLockMode.toLowerCase() === 'creative_concept';
 
   // Determine if it is a bedroom job
   const isBedroom = analysis.room_type_protection?.roomType?.toLowerCase() === 'bedroom' ||
@@ -192,12 +192,28 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
 
   const sceneFacts = sanitizeAndReport(sceneFactsRaw, 'unknown');
 
-  // 3. Rule 2: Preserve constraints must be explicit
   const preserveConstraintsRaw = analysis.preserve_constraints && analysis.preserve_constraints.length > 0
     ? `preserve structural constraints: ${analysis.preserve_constraints.join(', ')}`
     : '';
 
   const preserveConstraints = sanitizeAndReport(preserveConstraintsRaw, 'unknown');
+
+  // Strict structure positive terms injection
+  let strictStructurePositive = '';
+  if (geometryLockMode === 'strict_structure') {
+    const strictPositiveTerms = [
+      'photorealistic architectural render optimization',
+      'realistic materials',
+      'natural lighting',
+      'accurate shadows',
+      'glass reflections',
+      'realistic texture detail',
+      'professional archviz polish',
+      'same building geometry',
+      'same camera composition'
+    ];
+    strictStructurePositive = sanitizeAndReport(strictPositiveTerms.join(', '), 'unknown');
+  }
 
   // 4. Rule 3: Critical objects from object_priority must be included
   const priorityObjectsList = analysis.object_priority
@@ -279,6 +295,7 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
   const positivePrompt = [
     sceneFacts,
     preserveConstraints,
+    strictStructurePositive,
     criticalObjects,
     materialsAndSurfaces,
     lightingAndReflections,
@@ -299,6 +316,24 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
     'layout change', 'camera shift', 'low quality', 'text', 'watermark'
   ];
 
+  const strictStructureNegativeTerms = geometryLockMode === 'strict_structure'
+    ? [
+        'changed building structure',
+        'changed facade',
+        'moved windows',
+        'extra floors',
+        'missing windows',
+        'changed roofline',
+        'distorted geometry',
+        'new architecture',
+        'redesigned building',
+        'changed camera angle',
+        'warped doors',
+        'hallucinated openings',
+        'unrealistic proportions'
+      ]
+    : [];
+
   const presetNegative = stylePreset.negativePrompt || '';
   const forbiddenChanges = analysis.forbidden_changes || [];
 
@@ -306,7 +341,8 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
     presetNegative,
     forbiddenChanges.join(', '),
     finalBlockedTerms.join(', '),
-    defaultNegativeTerms.join(', ')
+    defaultNegativeTerms.join(', '),
+    strictStructureNegativeTerms.join(', ')
   ]
     .map(p => p.trim())
     .filter(Boolean)
@@ -314,9 +350,19 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
 
   // 14. Determine fallback settings
   const finalRenderMode = renderMode || analysis.suggested_render_mode || 'img2img';
+  
+  let defaultDenoise = stylePreset.defaultSettings?.denoise ?? 0.65;
+  if (geometryLockMode === 'strict_structure') {
+    defaultDenoise = 0.25;
+  } else if (geometryLockMode === 'balanced_enhancement') {
+    defaultDenoise = 0.40;
+  } else if (geometryLockMode === 'creative_concept') {
+    defaultDenoise = 0.65;
+  }
+
   const denoise = typeof analysis.suggested_denoise === 'number'
     ? analysis.suggested_denoise
-    : (stylePreset.defaultSettings?.denoise ?? 0.65);
+    : defaultDenoise;
 
   const finalGeometryLockMode = finalRenderMode === 'base_render_model' ? 'balanced' : (geometryLockMode as GeometryLockMode);
 

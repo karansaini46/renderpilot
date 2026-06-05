@@ -4,7 +4,7 @@ export interface StylePreset {
   description: string;
   promptTemplate: string;
   negativePrompt: string;
-  defaultGeometryLockMode: 'creative' | 'balanced' | 'accurate' | 'technical';
+  defaultGeometryLockMode: 'creative' | 'balanced' | 'accurate' | 'technical' | 'strict_structure' | 'balanced_enhancement' | 'creative_concept';
   defaultSettings: {
     steps: number;
     cfg_scale: number;

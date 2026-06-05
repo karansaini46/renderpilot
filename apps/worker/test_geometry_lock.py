@@ -80,11 +80,9 @@ def test_fallback_denoise_defaults():
     client = ComfyUIClient(base_url="http://localhost:8188", workflows_dir=".")
     
     modes_to_test = {
-        "technical": {"expected_denoise": 0.30, "expected_strength": 1.0},
-        "faithful": {"expected_denoise": 0.30, "expected_strength": 1.0},
-        "accurate": {"expected_denoise": 0.30, "expected_strength": 0.9},
-        "balanced": {"expected_denoise": 0.40, "expected_strength": 0.7},
-        "creative": {"expected_denoise": 0.60, "expected_strength": 0.4},
+        "strict_structure": {"expected_denoise": 0.25, "expected_strength": 1.0},
+        "balanced_enhancement": {"expected_denoise": 0.40, "expected_strength": 0.75},
+        "creative_concept": {"expected_denoise": 0.65, "expected_strength": 0.40},
     }
     
     for mode, expected in modes_to_test.items():
