@@ -619,10 +619,10 @@ export async function POST(request: Request) {
         denoise = Math.min(Math.max(Number(denoise), 0.15), 0.50);
       }
       if (userSettings.edge_control_strength === undefined) {
-        edgeStrength = 0.95;
+        edgeStrength = 0.80;
       }
       if (userSettings.depth_control_strength === undefined) {
-        depthStrength = 0.80;
+        depthStrength = 0.85;
       }
       if (steps === undefined) {
         steps = 30;
@@ -638,10 +638,10 @@ export async function POST(request: Request) {
         denoise = Math.min(Math.max(Number(denoise), 0.15), 0.70);
       }
       if (userSettings.edge_control_strength === undefined) {
-        edgeStrength = 0.90;
+        edgeStrength = 0.65;
       }
       if (userSettings.depth_control_strength === undefined) {
-        depthStrength = 0.75;
+        depthStrength = 0.80;
       }
       if (steps === undefined) {
         steps = 32;
@@ -657,10 +657,10 @@ export async function POST(request: Request) {
         denoise = Math.min(Math.max(Number(denoise), 0.15), 0.90);
       }
       if (userSettings.edge_control_strength === undefined) {
-        edgeStrength = 0.85;
+        edgeStrength = 0.50;
       }
       if (userSettings.depth_control_strength === undefined) {
-        depthStrength = 0.70;
+        depthStrength = 0.75;
       }
       if (steps === undefined) {
         steps = 35;

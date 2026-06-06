@@ -274,9 +274,9 @@ class ComfyUIClient:
             'strict_structure': 0.90,
             'faithful': 0.90,
             # New profiles:
-            'strict_geometry': 0.80,      # depth 0.80
-            'balanced_archviz': 0.75,     # depth 0.75
-            'high_realism': 0.70,         # depth 0.70
+            'strict_geometry': 0.85,      # depth 0.85
+            'balanced_archviz': 0.80,     # depth 0.80
+            'high_realism': 0.75,         # depth 0.75
         }
 
         canny_strength_map = {
@@ -290,9 +290,9 @@ class ComfyUIClient:
             'strict_structure': 0.60,
             'faithful': 0.60,
             # New profiles:
-            'strict_geometry': 0.95,      # canny 0.95
-            'balanced_archviz': 0.90,     # canny 0.90
-            'high_realism': 0.85,         # canny 0.85
+            'strict_geometry': 0.80,      # canny 0.80
+            'balanced_archviz': 0.65,     # canny 0.65
+            'high_realism': 0.50,         # canny 0.50
         }
 
         mode_depth_strength = control_strength_map.get(mode, 0.75)
