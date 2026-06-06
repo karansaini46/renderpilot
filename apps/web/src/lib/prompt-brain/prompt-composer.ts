@@ -330,7 +330,12 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
         'changed camera angle',
         'warped doors',
         'hallucinated openings',
-        'unrealistic proportions'
+        'unrealistic proportions',
+        'warped architecture',
+        'extra windows',
+        'bent railings',
+        'changed gate',
+        'crooked walls'
       ]
     : [];
 

@@ -595,26 +595,45 @@ export async function POST(request: Request) {
     }
 
     let denoise = userSettings.denoise !== undefined ? userSettings.denoise : composerResult.denoise;
-    let edgeStrength = 1.0;
-    let depthStrength = 1.0;
+    
+    // Check stylePreset defaults for custom strengths
+    let edgeStrength = userSettings.edge_control_strength !== undefined
+      ? Number(userSettings.edge_control_strength)
+      : (stylePreset.defaultSettings?.edge_control_strength !== undefined
+        ? Number(stylePreset.defaultSettings.edge_control_strength)
+        : 0.90);
+
+    let depthStrength = userSettings.depth_control_strength !== undefined
+      ? Number(userSettings.depth_control_strength)
+      : (stylePreset.defaultSettings?.depth_control_strength !== undefined
+        ? Number(stylePreset.defaultSettings.depth_control_strength)
+        : 0.75);
 
     if (geometryLockMode === 'technical' || geometryLockMode === 'strict' || geometryLockMode === 'strict_structure') {
       if (denoise === undefined || denoise === null) {
-        denoise = 0.35;
+        denoise = 0.30;
       } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.25), 0.45);
+        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.35);
       }
-      edgeStrength = 1.0;
-      depthStrength = 1.0;
+      if (userSettings.edge_control_strength === undefined) {
+        edgeStrength = 0.90;
+      }
+      if (userSettings.depth_control_strength === undefined) {
+        depthStrength = 0.75;
+      }
       console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
     } else if (geometryLockMode === 'accurate') {
       if (denoise === undefined || denoise === null) {
-        denoise = 0.55;
+        denoise = 0.30;
       } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.50), 0.65);
+        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.35);
       }
-      edgeStrength = 1.0;
-      depthStrength = 1.0;
+      if (userSettings.edge_control_strength === undefined) {
+        edgeStrength = 0.90;
+      }
+      if (userSettings.depth_control_strength === undefined) {
+        depthStrength = 0.75;
+      }
       console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
     } else if (geometryLockMode === 'balanced' || geometryLockMode === 'balanced_enhancement') {
       if (denoise === undefined || denoise === null) {
@@ -622,8 +641,12 @@ export async function POST(request: Request) {
       } else {
         denoise = Math.min(Math.max(Number(denoise), 0.60), 0.75);
       }
-      edgeStrength = 0.75;
-      depthStrength = 0.75;
+      if (userSettings.edge_control_strength === undefined) {
+        edgeStrength = 0.75;
+      }
+      if (userSettings.depth_control_strength === undefined) {
+        depthStrength = 0.75;
+      }
       console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
     } else if (geometryLockMode === 'creative' || geometryLockMode === 'creative_concept') {
       if (denoise === undefined || denoise === null) {
@@ -631,17 +654,25 @@ export async function POST(request: Request) {
       } else {
         denoise = Math.min(Math.max(Number(denoise), 0.72), 0.88);
       }
-      edgeStrength = 0.40;
-      depthStrength = 0.40;
+      if (userSettings.edge_control_strength === undefined) {
+        edgeStrength = 0.40;
+      }
+      if (userSettings.depth_control_strength === undefined) {
+        depthStrength = 0.40;
+      }
       console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
     } else {
       if (denoise === undefined || denoise === null) {
-        denoise = 0.35;
+        denoise = 0.30;
       } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.25), 0.45);
+        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.35);
       }
-      edgeStrength = 1.0;
-      depthStrength = 1.0;
+      if (userSettings.edge_control_strength === undefined) {
+        edgeStrength = 0.90;
+      }
+      if (userSettings.depth_control_strength === undefined) {
+        depthStrength = 0.75;
+      }
       console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
     }
 
