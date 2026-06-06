@@ -10,6 +10,7 @@ import { analyzeProjectImage } from '../../../lib/prompt-brain/gemini-provider';
 import { composePrompt } from '../../../lib/prompt-brain/prompt-composer';
 import { processAutoMaterialMappings } from '../../../lib/prompt-brain/material-mapper';
 import { PromptBrainSchema, SCENE_TYPES } from '../../../lib/prompt-brain/types';
+import { enhancePromptWithGemini } from '../../../lib/gemini-prompt-enhancer';
 
 function createManualAnalysis(
   sceneType: string,
@@ -541,9 +542,23 @@ export async function POST(request: Request) {
     finalSettings.promptBrainProvider = finalProvider;
     finalSettings.promptBrainAnalysisId = analysisId;
     finalSettings.promptBrainAnalysis = analysisResult;
-    finalSettings.prompt = composerResult.positivePrompt;
     finalSettings.negativePrompt = composerResult.negativePrompt;
     finalSettings.promptSafetyReport = composerResult.promptSafetyReport;
+
+    // Enhance prompt using Gemini
+    const finalPrompt = composerResult.positivePrompt;
+    let enhancedPrompt = finalPrompt;
+    const geminiEnhancerStatus = { status: 'skipped' as 'applied' | 'skipped' | 'failed', error: undefined as string | undefined };
+
+    try {
+      enhancedPrompt = await enhancePromptWithGemini(finalPrompt, geminiEnhancerStatus);
+    } catch (err: any) {
+      geminiEnhancerStatus.status = 'failed';
+      geminiEnhancerStatus.error = err.message;
+      console.error('[Jobs Route Gemini Enhancement Crash Shield]:', err.message);
+    }
+
+    finalSettings.prompt = enhancedPrompt;
     
     // Explicit user selections / fallbacks
     finalSettings.projectType = projectType;
@@ -699,6 +714,26 @@ export async function POST(request: Request) {
           eventType: 'queued',
           message: 'Render job created and queued for processing.',
           detailsJson: jobSettings,
+        }
+      });
+
+      // Log Gemini prompt enhancement status
+      await tx.jobEvent.create({
+        data: {
+          id: `event_${Date.now()}_${Math.floor(Math.random() * 1000 + 5)}`,
+          jobId: jobId,
+          eventType: `gemini_enhancement_${geminiEnhancerStatus.status}`,
+          message: geminiEnhancerStatus.status === 'applied'
+            ? 'Gemini prompt enhancement applied successfully.'
+            : geminiEnhancerStatus.status === 'failed'
+            ? `Gemini prompt enhancement failed: ${geminiEnhancerStatus.error || 'Unknown error'}. Fell back to original prompt.`
+            : 'Gemini prompt enhancement skipped.',
+          detailsJson: JSON.stringify({
+            status: geminiEnhancerStatus.status,
+            error: geminiEnhancerStatus.error || null,
+            originalPrompt: finalPrompt,
+            enhancedPrompt: enhancedPrompt
+          })
         }
       });
 

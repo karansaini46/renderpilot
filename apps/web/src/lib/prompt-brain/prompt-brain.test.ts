@@ -10,6 +10,8 @@ process.env.AWS_SECRET_ACCESS_KEY = 'DUMMY_SECRET';
 process.env.PROMPT_BRAIN_PROVIDER = 'gemini';
 process.env.GEMINI_API_KEY = 'mock-api-key';
 process.env.PROMPT_BRAIN_CACHE_ENABLED = 'false'; // disable cache for tests to execute pipeline
+process.env.GEMINI_PROMPT_ENHANCER_ENABLED = 'false'; // disable prompt enhancer for core pipeline tests
+
 
 import assert from 'assert';
 
@@ -461,7 +463,7 @@ async function runTests() {
       data: mockBedroomAnalysis
     };
 
-    // Pass explicit denoise = 0.42
+    // Pass explicit denoise = 0.62
     const request = new Request('http://localhost/api/jobs', {
       method: 'POST',
       body: JSON.stringify({
@@ -470,7 +472,7 @@ async function runTests() {
           sceneType: 'Interior',
           projectType: 'Residential',
           styleId: 'style_warm_int',
-          denoise: 0.42,
+          denoise: 0.62,
         })
       })
     });
@@ -481,8 +483,8 @@ async function runTests() {
     const createdJob = mockRenderJobs[0];
     const finalSettings = JSON.parse(createdJob.settingsJson);
 
-    // Verify it is exactly 0.42
-    assert.strictEqual(finalSettings.denoise, 0.42, 'Explicit denoise must survive into worker settings');
+    // Verify it is exactly 0.62
+    assert.strictEqual(finalSettings.denoise, 0.62, 'Explicit denoise must survive into worker settings');
 
     console.log('  -> PASS');
   }

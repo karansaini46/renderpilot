@@ -20,6 +20,7 @@ export interface WebConfig {
   PROMPT_BRAIN_TIMEOUT_MS: number;
   PROMPT_BRAIN_MIN_CONFIDENCE: number;
   PROMPT_BRAIN_CACHE_ENABLED: boolean;
+  GEMINI_PROMPT_ENHANCER_ENABLED: boolean;
 }
 
 const REQUIRED_WEB_ENV_VARS = [
@@ -100,6 +101,18 @@ function validateEnv(): WebConfig {
     }
   }
 
+  let promptEnhancerEnabled = true;
+  if (process.env.GEMINI_PROMPT_ENHANCER_ENABLED) {
+    const val = process.env.GEMINI_PROMPT_ENHANCER_ENABLED.trim().toLowerCase();
+    if (val === 'true') {
+      promptEnhancerEnabled = true;
+    } else if (val === 'false') {
+      promptEnhancerEnabled = false;
+    } else {
+      throw new Error(`[Configuration Error] Invalid GEMINI_PROMPT_ENHANCER_ENABLED: must be 'true' or 'false'`);
+    }
+  }
+
   return {
     DATABASE_URL: process.env.DATABASE_URL!,
     STORAGE_PROVIDER: process.env.STORAGE_PROVIDER!,
@@ -116,6 +129,7 @@ function validateEnv(): WebConfig {
     PROMPT_BRAIN_TIMEOUT_MS: timeout,
     PROMPT_BRAIN_MIN_CONFIDENCE: minConfidence,
     PROMPT_BRAIN_CACHE_ENABLED: cacheEnabled,
+    GEMINI_PROMPT_ENHANCER_ENABLED: promptEnhancerEnabled,
   };
 }
 
