@@ -21,12 +21,14 @@ export async function enhancePromptWithGemini(
   // Check if server-side only
   if (typeof window !== 'undefined') {
     if (tracker) tracker.status = 'skipped';
+    console.log('Gemini enhancer skipped: browser environment');
     return input;
   }
 
-  // Return the original prompt if GEMINI_PROMPT_ENHANCER_ENABLED is not "true"
-  if (process.env.GEMINI_PROMPT_ENHANCER_ENABLED !== 'true') {
+  // Return the original prompt if GEMINI_PROMPT_ENHANCER_ENABLED is not enabled
+  if (!env.GEMINI_PROMPT_ENHANCER_ENABLED) {
     if (tracker) tracker.status = 'skipped';
+    console.log('Gemini enhancer skipped: enhancer disabled');
     return input;
   }
 
@@ -34,11 +36,13 @@ export async function enhancePromptWithGemini(
   const apiKey = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey.trim() === '') {
     if (tracker) tracker.status = 'skipped';
+    console.log('Gemini enhancer skipped: missing API key');
     return input;
   }
 
   if (!input || input.trim() === '') {
     if (tracker) tracker.status = 'skipped';
+    console.log('Gemini enhancer skipped: empty input');
     return input;
   }
 
@@ -81,6 +85,7 @@ ENHANCEMENT RULES:
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
+  console.log('Gemini enhancer attempted');
   try {
     const response = await fetch(url, {
       method: 'POST',
@@ -119,6 +124,7 @@ ENHANCEMENT RULES:
       throw new Error('Enhanced prompt became empty after sanitization.');
     }
 
+    console.log('Gemini enhancer applied');
     if (tracker) {
       tracker.status = 'applied';
     }
@@ -131,7 +137,7 @@ ENHANCEMENT RULES:
       errMsg = `Request timed out after ${timeoutMs}ms`;
     }
 
-    console.error(`[Gemini Prompt Enhancer Error]: ${errMsg}`);
+    console.log(`Gemini enhancer failed: ${errMsg}`);
     
     if (tracker) {
       tracker.status = 'failed';

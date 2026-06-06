@@ -396,17 +396,19 @@ export async function POST(request: Request) {
     const analysisCacheKey = projectFile 
       ? createHash('md5').update(`${projectFile.id}_${pbProvider}_${pbModel}`).digest('hex')
       : '';
-      
-    // Try to load cached analysis if caching is enabled
+          // Try to load cached analysis if caching is enabled
     if (projectFile && env.PROMPT_BRAIN_CACHE_ENABLED && analysisCacheKey && !isForceRegenerate) {
       try {
         const cachedAnalysis = await prisma.promptBrainAnalysis.findFirst({
           where: { cacheKey: analysisCacheKey }
         });
-        if (cachedAnalysis) {
+        if (cachedAnalysis && cachedAnalysis.provider === pbProvider) {
           analysisResult = JSON.parse(cachedAnalysis.analysisJson) as PromptBrainSchema;
           analysisId = cachedAnalysis.id;
           finalProvider = cachedAnalysis.provider as any;
+          if (pbProvider === 'gemini') {
+            console.log('Gemini PromptBrain skipped: cached analysis loaded');
+          }
         }
       } catch (cacheErr: any) {
         console.error('[PromptBrain Cache Read Error]:', cacheErr.message);
@@ -415,27 +417,41 @@ export async function POST(request: Request) {
     
     // If not cached or caching is disabled, run analysis
     if (!analysisResult && projectFile) {
-      if ((pbProvider === 'gemini' || isForceRegenerate) && env.GEMINI_API_KEY) {
-        try {
-          const geminiRes = await analyzeProjectImage(project.id, sceneType);
-          if (geminiRes.success && geminiRes.analysis && geminiRes.analysis.confidence >= (env.PROMPT_BRAIN_MIN_CONFIDENCE || 0.75)) {
-            analysisResult = geminiRes.analysis;
-            finalProvider = 'gemini';
-
-            // Run helper to process material mappings
-            try {
-              await processAutoMaterialMappings(project.id, analysisResult);
-            } catch (mapperErr: any) {
-              console.error('[PromptBrain Auto Material Mapper Error]:', mapperErr.message);
-            }
-          } else {
-            console.warn(`[PromptBrain Gemini Fallback]: Success=${geminiRes.success}, Confidence=${geminiRes.analysis?.confidence ?? 'N/A'}`);
-            finalProvider = 'manual';
-          }
-        } catch (geminiErr: any) {
-          console.error('[PromptBrain Gemini Request Error]:', geminiErr.message);
+      const isGeminiRequested = pbProvider === 'gemini' || isForceGemini;
+      
+      if (isGeminiRequested) {
+        if (!env.GEMINI_API_KEY) {
+          console.log('Gemini PromptBrain skipped: missing API key');
           finalProvider = 'manual';
+        } else {
+          console.log('Gemini PromptBrain attempted');
+          try {
+            const geminiRes = await analyzeProjectImage(project.id, sceneType);
+            if (geminiRes.success && geminiRes.analysis && geminiRes.analysis.confidence >= (env.PROMPT_BRAIN_MIN_CONFIDENCE || 0.75)) {
+              analysisResult = geminiRes.analysis;
+              finalProvider = 'gemini';
+              console.log('Gemini PromptBrain applied');
+
+              // Run helper to process material mappings
+              try {
+                await processAutoMaterialMappings(project.id, analysisResult);
+              } catch (mapperErr: any) {
+                console.error('[PromptBrain Auto Material Mapper Error]:', mapperErr.message);
+              }
+            } else {
+              console.warn(`[PromptBrain Gemini Fallback]: Success=${geminiRes.success}, Confidence=${geminiRes.analysis?.confidence ?? 'N/A'}`);
+              finalProvider = 'manual';
+              console.log('Gemini PromptBrain skipped: low confidence or unsuccessful analysis');
+            }
+          } catch (geminiErr: any) {
+            console.error('[PromptBrain Gemini Request Error]:', geminiErr.message);
+            finalProvider = 'manual';
+            console.log(`Gemini PromptBrain skipped: request error ${geminiErr.message}`);
+          }
         }
+      } else {
+        console.log('Gemini PromptBrain skipped: provider is manual');
+        finalProvider = 'manual';
       }
       
       // Fallback/Manual Mode: Construct manual analysis
