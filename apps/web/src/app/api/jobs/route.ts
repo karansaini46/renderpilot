@@ -231,7 +231,16 @@ export async function POST(request: Request) {
       userSettings = {};
     }
 
-    if (userSettings.job_type === 'base_render_model' || userSettings.jobType === 'base_render_model') {
+    const latestFile = project.projectFiles[0];
+    const latestFileExt = latestFile?.fileUrl.split('.').pop()?.toLowerCase() || '';
+    const isModelFile = ['blend', 'skp', 'glb', 'obj', 'fbx', 'zip'].includes(latestFileExt);
+    
+    let resolvedJobType = userSettings.job_type || userSettings.jobType;
+    if (!resolvedJobType && isModelFile) {
+      resolvedJobType = 'base_render_model';
+    }
+
+    if (resolvedJobType === 'base_render_model') {
       if (process.env.BLENDER_PIPELINE_ENABLED !== 'true') {
         return NextResponse.json(
           { error: 'Blender pipeline (base_render_model) is currently disabled behind a feature flag.' },
@@ -580,7 +589,8 @@ export async function POST(request: Request) {
     finalSettings.projectType = projectType;
     finalSettings.sceneType = sceneType;
     finalSettings.materialChoices = combinedMaterials;
-    finalSettings.renderMode = userSettings.job_type || userSettings.jobType || composerResult.renderMode;
+    finalSettings.job_type = resolvedJobType;
+    finalSettings.renderMode = resolvedJobType || composerResult.renderMode;
     // Resolve mode and parameters
     const geometryLockMode = userSettings.geometryLockMode || finalSettings.geometryLockMode || composerResult.geometryLockMode || 'balanced_archviz';
     let renderMode = geometryLockMode;

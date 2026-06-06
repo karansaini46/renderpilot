@@ -12,6 +12,41 @@ import datetime
 import json
 from config import config
 
+def create_mock_png(filepath: str, text: str) -> None:
+    """
+    Generates a valid, structurally representative PNG mockup placeholder 
+    using PIL to prevent image processing libraries from failing down the line.
+    """
+    from PIL import Image, ImageDraw
+    # Create dark slate-colored base
+    img = Image.new("RGB", (512, 512), color=(30, 32, 40))
+    draw = ImageDraw.Draw(img)
+    
+    # Draw simple gridlines to represent a viewport grid
+    for i in range(0, 512, 64):
+        draw.line([(i, 0), (i, 512)], fill=(40, 45, 55), width=1)
+        draw.line([(0, i), (512, i)], fill=(40, 45, 55), width=1)
+        
+    # Draw simple building shapes
+    draw.rectangle([128, 192, 384, 416], outline=(79, 70, 229), width=3)
+    draw.polygon([(128, 192), (256, 96), (384, 192)], outline=(99, 102, 241), width=3)
+    
+    # Draw door and window details
+    draw.rectangle([224, 320, 288, 416], outline=(99, 102, 241), width=2) # Door
+    draw.rectangle([160, 240, 208, 288], outline=(99, 102, 241), width=2) # Window Left
+    draw.rectangle([304, 240, 352, 288], outline=(99, 102, 241), width=2) # Window Right
+    
+    # Text banner background
+    draw.rectangle([0, 440, 512, 490], fill=(15, 17, 23))
+    
+    # Draw simple text using Pillow default text fallback (without external ttf dependencies)
+    try:
+        draw.text((24, 455), text, fill=(200, 210, 230))
+    except Exception:
+        pass
+        
+    img.save(filepath, "PNG")
+
 def write_camera_preview_script(script_path: str) -> None:
     """
     Writes the camera preview generator script to a file.
@@ -354,10 +389,9 @@ def run_blender_pipeline(job_id: str, project_id: str, settings_json: str, local
             output_files[slot] = dest
             print(f"  -> Generated pass file: {dest}")
         else:
-            # Fallback to simulated outputs if Blender did not run or fail to render the slot
+            # Fallback to simulated outputs if Blender did not run or failed to render the slot
             print(f"  -> Pass file {slot} not found. Creating simulated fallback.", file=sys.stderr)
-            with open(dest, "w") as f:
-                f.write(f"SIMULATED_BLENDER_PASS_OUTPUT: {slot.upper()} for Job {job_id}")
+            create_mock_png(dest, f"Pass file: {slot.upper()} for Job {job_id}")
             output_files[slot] = dest
 
     return {
@@ -432,10 +466,9 @@ def run_camera_preview_pipeline(job_id: str, project_id: str, user_id: str, loca
         name = candidate["name"]
         local_thumb = os.path.join(workspace_dir, f"thumbnail_{idx}.png")
         
-        # If thumbnail file doesn't exist, create a mock text thumbnail
+        # If thumbnail file doesn't exist, create a mock PNG thumbnail
         if not os.path.exists(local_thumb):
-            with open(local_thumb, "w") as f:
-                f.write(f"SIMULATED_CAMERA_THUMBNAIL: {name.upper()} for Job {job_id}")
+            create_mock_png(local_thumb, f"Camera Candidate: {name.upper()}")
                 
         timestamp_sec = int(datetime.datetime.now().timestamp())
         s3_key = f"users/{user_id}/projects/{project_id}/outputs/camera_{job_id}_{idx}.png"

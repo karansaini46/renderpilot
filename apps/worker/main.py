@@ -591,258 +591,6 @@ def _process_job_impl(conn, job):
                 active_job_id = None
             return
 
-        # Execute Blender pipeline
-        cur = conn.cursor()
-        workspace_dir = os.path.join(config.LOCAL_WORKSPACE_ROOT, "blender_jobs", job_id)
-        try:
-            # Update to processing status
-            cur.execute("UPDATE render_jobs SET status = 'processing', progress = 10 WHERE id = %s;", (job_id,))
-            
-            event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
-            cur.execute("""
-                INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
-                VALUES (%s, %s, 'processing', 'Blender CAD pipeline processing initiated.', '{}', %s);
-            """, (event_id, job_id, datetime.datetime.now(datetime.timezone.utc)))
-            conn.commit()
-            
-            # Fetch user_id of the project
-            cur.execute("SELECT user_id FROM projects WHERE id = %s LIMIT 1;", (project_id,))
-            user_row = cur.fetchone()
-            user_id = user_row[0] if user_row and user_row[0] else "default-user"
-
-            # Query the latest .blend project file
-            cur.execute("""
-                SELECT file_url FROM project_files
-                WHERE project_id = %s AND (file_type LIKE 'model/%%' OR file_url LIKE '%%.blend')
-                ORDER BY created_at DESC LIMIT 1;
-            """, (project_id,))
-            file_row = cur.fetchone()
-            if not file_row:
-                raise ValueError(f"No input model file found for project: {project_id}")
-            
-            file_url = file_row[0]
-            
-            # Create local job workspace
-            os.makedirs(workspace_dir, exist_ok=True)
-            local_blend_path = os.path.join(workspace_dir, os.path.basename(file_url))
-            
-            print(f"[{datetime.datetime.now().strftime('%T')}] Downloading input model from S3: {file_url} -> {local_blend_path}", flush=True)
-            downloadFileToWorker(file_url, local_blend_path)
-            
-            selected_camera = settings.get("selected_camera")
-            if not selected_camera:
-                # Phase 1: Camera Preview and Auto-Setup Generation
-                print(f"[{datetime.datetime.now().strftime('%T')}] No camera selection found. Generating candidates...", flush=True)
-                
-                # Update progress
-                cur.execute("UPDATE render_jobs SET progress = 20 WHERE id = %s;", (job_id,))
-                conn.commit()
-                
-                candidates, detected_materials = run_camera_preview_pipeline(job_id, project_id, user_id, local_blend_path)
-                
-                if detected_materials:
-                    print(f"[{datetime.datetime.now().strftime('%T')}] Analyzing {len(detected_materials)} scene materials...", flush=True)
-                    for item in detected_materials:
-                        obj_name = item.get("object_name", "")
-                        mat_name = item.get("material_name", "")
-                        collections = item.get("collections", [])
-                        base_color = item.get("base_color", [1.0, 1.0, 1.0, 1.0])
-                        
-                        detected_class, confidence, reason = detect_material_class(
-                            obj_name, mat_name, collections, base_color
-                        )
-                        
-                        selected_material = get_default_finish(detected_class, mat_name)
-                        
-                        # Check if a user mapping for this objectName already exists and is locked.
-                        cur.execute("""
-                            SELECT id, locked FROM material_mappings 
-                            WHERE project_id = %s AND object_name = %s LIMIT 1;
-                        """, (project_id, obj_name))
-                        existing = cur.fetchone()
-                        
-                        if existing:
-                            mapping_id, locked = existing
-                            if not locked:
-                                cur.execute("""
-                                    UPDATE material_mappings
-                                    SET detected_class = %s, selected_material = %s, confidence = %s, reason = %s, correction_source = 'heuristic'
-                                    WHERE id = %s;
-                                """, (detected_class, selected_material, confidence, reason, mapping_id))
-                        else:
-                            mapping_id = f"mm_{int(time.time() * 1000)}_{random.randint(0, 999)}"
-                            cur.execute("""
-                                INSERT INTO material_mappings (id, project_id, object_name, detected_class, selected_material, confidence, locked, correction_source, reason)
-                                VALUES (%s, %s, %s, %s, %s, %s, FALSE, 'heuristic', %s);
-                            """, (mapping_id, project_id, obj_name, detected_class, selected_material, confidence, reason))
-                    
-                    conn.commit()
-                    print(f"[{datetime.datetime.now().strftime('%T')}] Successfully saved material mapping guesses to database.", flush=True)
-
-                # Update settings_json in the DB with the candidates
-                settings["camera_candidates"] = candidates
-                updated_settings_json = json.dumps(settings)
-                
-                cur.execute("""
-                    UPDATE render_jobs
-                    SET status = 'waiting_for_camera', progress = 50, settings_json = %s
-                    WHERE id = %s;
-                """, (updated_settings_json, job_id))
-                
-                event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
-                cur.execute("""
-                    INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
-                    VALUES (%s, %s, 'waiting_for_camera', 'Camera preview candidates generated. Awaiting user selection.', %s, %s);
-                """, (
-                    event_id, job_id,
-                    json.dumps({"camera_candidates": candidates}),
-                    datetime.datetime.now(datetime.timezone.utc)
-                ))
-                conn.commit()
-                
-                # Clean up workspace
-                import shutil
-                if os.path.exists(workspace_dir):
-                    print(f"[{datetime.datetime.now().strftime('%T')}] Cleaning up workspace for job {job_id}...", flush=True)
-                    shutil.rmtree(workspace_dir, ignore_errors=True)
-                    
-                print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} is now waiting for user camera selection.", flush=True)
-                return
-
-            # Phase 2: Full Render (camera selected)
-            print(f"[{datetime.datetime.now().strftime('%T')}] Found selected camera. Proceeding with full render...", flush=True)
-            
-            # Update progress
-            cur.execute("UPDATE render_jobs SET progress = 30 WHERE id = %s;", (job_id,))
-            conn.commit()
-
-            # Execute Blender pipeline passing the custom camera config
-            blender_result = run_blender_pipeline(job_id, project_id, json.dumps(settings), local_blend_path, selected_camera)
-            
-            # Update progress after rendering
-            cur.execute("UPDATE render_jobs SET progress = 70 WHERE id = %s;", (job_id,))
-            conn.commit()
-            
-            # Upload outputs to object storage and register metadata
-            uploaded_outputs = {}
-            import shutil
-            for slot_name, local_path in blender_result.get("outputs", {}).items():
-                s3_key = f"users/{user_id}/projects/{project_id}/outputs/blender_{job_id}_{slot_name}.png"
-                
-                print(f"[{datetime.datetime.now().strftime('%T')}] Uploading {slot_name} to S3: {s3_key}", flush=True)
-                uploadFileFromWorker(local_path, s3_key)
-                uploaded_outputs[slot_name] = s3_key
-                
-                # Register in project_files table
-                file_id = f"file_{int(time.time() * 1000)}_{random.randint(0, 999)}"
-                metadata_json = json.dumps({
-                    "size": f"{(os.path.getsize(local_path) / 1024):.2f} KB",
-                    "uploadedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    "role": "control_pass",
-                    "pass_type": slot_name,
-                    "sourceJobId": job_id
-                })
-                
-                cur.execute("""
-                    INSERT INTO project_files (id, project_id, file_url, file_type, metadata_json, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s);
-                """, (
-                    file_id,
-                    project_id,
-                    s3_key,
-                    "image/png",
-                    metadata_json,
-                    datetime.datetime.now(datetime.timezone.utc)
-                ))
-            
-            # Clean up local workspace folder after successful execution
-            if os.path.exists(workspace_dir):
-                print(f"[{datetime.datetime.now().strftime('%T')}] Cleaning up workspace for job {job_id}...", flush=True)
-                shutil.rmtree(workspace_dir, ignore_errors=True)
-
-            # Update to completed status
-            cur.execute("""
-                UPDATE render_jobs
-                SET status = 'completed', progress = 100, completed_at = %s
-                WHERE id = %s;
-            """, (datetime.datetime.now(datetime.timezone.utc), job_id))
-            
-            # Prepare result dictionary to save in events
-            event_details = {
-                "status": blender_result.get("status"),
-                "outputs": uploaded_outputs,
-                "timestamp": blender_result.get("timestamp")
-            }
-            
-            event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
-            cur.execute("""
-                INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
-                VALUES (%s, %s, 'completed', %s, %s, %s);
-            """, (
-                event_id, job_id, 
-                "Blender CAD pipeline execution completed successfully.", 
-                json.dumps(event_details), 
-                datetime.datetime.now(datetime.timezone.utc)
-            ))
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            print(f"Blender pipeline execution error: {e}", file=sys.stderr, flush=True)
-            
-            # Clean up local workspace folder on failure
-            import shutil
-            if os.path.exists(workspace_dir):
-                print(f"[{datetime.datetime.now().strftime('%T')}] Cleaning up workspace for job {job_id} after failure...", flush=True)
-                shutil.rmtree(workspace_dir, ignore_errors=True)
-                
-            # Log failure to database
-            cur_fail = None
-            try:
-                retry_count = job.get("retry_count", 0)
-                max_retries = job.get("max_retries", 3)
-                
-                cur_fail = conn.cursor()
-                if retry_count < max_retries:
-                    new_retry = retry_count + 1
-                    cur_fail.execute("""
-                        UPDATE render_jobs
-                        SET status = 'queued', retry_count = %s, error_message = %s, failed_at = %s, progress = 0
-                        WHERE id = %s;
-                    """, (new_retry, str(e), datetime.datetime.now(datetime.timezone.utc), job_id))
-                    
-                    event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
-                    cur_fail.execute("""
-                        INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
-                        VALUES (%s, %s, 'failed', %s, '{}', %s);
-                    """, (event_id, job_id, f"Blender pipeline execution failed (Retry {new_retry}/{max_retries}): {e}", datetime.datetime.now(datetime.timezone.utc)))
-                    conn.commit()
-                    print(f"[{datetime.datetime.now().strftime('%T')}] Rescheduled job {job_id} for retry ({new_retry}/{max_retries}).", flush=True)
-                else:
-                    cur_fail.execute("""
-                        UPDATE render_jobs
-                        SET status = 'failed', error_message = %s, failed_at = %s
-                        WHERE id = %s;
-                    """, (str(e), datetime.datetime.now(datetime.timezone.utc), job_id))
-                    
-                    event_id = f"event_{int(time.time() * 1000)}_{random.randint(0, 999)}"
-                    cur_fail.execute("""
-                        INSERT INTO job_events (id, job_id, event_type, message, details_json, created_at)
-                        VALUES (%s, %s, 'failed', %s, '{}', %s);
-                    """, (event_id, job_id, f"Blender pipeline execution failed permanently (Max retries exceeded): {e}", datetime.datetime.now(datetime.timezone.utc)))
-                    conn.commit()
-                    print(f"[{datetime.datetime.now().strftime('%T')}] Job {job_id} failed permanently (Max retries exceeded).", flush=True)
-            except Exception as log_err:
-                print(f"Failed to log job failure details: {log_err}", file=sys.stderr, flush=True)
-                if conn:
-                    conn.rollback()
-            finally:
-                if cur_fail:
-                    cur_fail.close()
-        finally:
-            cur.close()
-            active_job_id = None
-        return
-
     # Apply capacity guardrails before processing
     clamped_settings, adjustments = downshift_job_settings(raw_settings, capacity_profile)
 
@@ -927,7 +675,15 @@ def _process_job_impl(conn, job):
         user_id = user_row[0] if user_row and user_row[0] else "default-user"
 
         is_upscale = clamped_settings.get("job_type") == "upscale_selected"
+        is_model = clamped_settings.get("job_type") == "base_render_model"
         render_id_to_upscale = clamped_settings.get("renderId")
+
+        # Initialize local paths
+        local_input_path = None
+        local_control_path = None
+        local_depth_control_path = None
+        s3_control_key = None
+        s3_depth_key = None
 
         if is_upscale:
             if not render_id_to_upscale:
@@ -957,6 +713,152 @@ def _process_job_impl(conn, job):
                 
             variations = 1
             denoise = 0.25 # Low denoise to preserve composition/details
+            
+            # Create local job workspace
+            workspace_dir = os.path.join(config.LOCAL_WORKSPACE_ROOT, "jobs", job_id)
+            os.makedirs(workspace_dir, exist_ok=True)
+            local_input_filename = f"input_{os.path.basename(file_url)}"
+            local_input_path = os.path.join(workspace_dir, local_input_filename)
+            print(f"[{datetime.datetime.now().strftime('%T')}] Downloading input image from S3: {file_url} -> {local_input_path}", flush=True)
+            downloadFileToWorker(file_url, local_input_path)
+
+        elif is_model:
+            # Query the latest model project file
+            cur.execute("""
+                SELECT file_url FROM project_files
+                WHERE project_id = %s AND (file_type LIKE 'model/%%' OR file_url LIKE '%%.blend' OR file_url LIKE '%%.skp' OR file_url LIKE '%%.obj' OR file_url LIKE '%%.fbx' OR file_url LIKE '%%.glb')
+                ORDER BY created_at DESC LIMIT 1;
+            """, (project_id,))
+            file_row = cur.fetchone()
+            if not file_row:
+                raise ValueError(f"No input model file found for project: {project_id}")
+            
+            file_url = file_row[0]
+            
+            # Create local job workspace
+            workspace_dir = os.path.join(config.LOCAL_WORKSPACE_ROOT, "jobs", job_id)
+            os.makedirs(workspace_dir, exist_ok=True)
+            local_model_path = os.path.join(workspace_dir, os.path.basename(file_url))
+            
+            print(f"[{datetime.datetime.now().strftime('%T')}] Downloading input model from S3: {file_url} -> {local_model_path}", flush=True)
+            downloadFileToWorker(file_url, local_model_path)
+
+            # Resolve camera selection
+            selected_camera = clamped_settings.get("selected_camera")
+            if not selected_camera:
+                print(f"[{datetime.datetime.now().strftime('%T')}] No camera selection found. Generating candidates...", flush=True)
+                
+                # Run preview pipeline to get candidates and detect materials
+                candidates, detected_materials = run_camera_preview_pipeline(job_id, project_id, user_id, local_model_path)
+                
+                # Classify and save detected materials to database
+                if detected_materials:
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Analyzing {len(detected_materials)} scene materials...", flush=True)
+                    for item in detected_materials:
+                        obj_name = item.get("object_name", "")
+                        mat_name = item.get("material_name", "")
+                        collections = item.get("collections", [])
+                        base_color = item.get("base_color", [1.0, 1.0, 1.0, 1.0])
+                        
+                        detected_class, confidence, reason = detect_material_class(
+                            obj_name, mat_name, collections, base_color
+                        )
+                        selected_material = get_default_finish(detected_class, mat_name)
+                        
+                        cur.execute("""
+                            SELECT id, locked FROM material_mappings 
+                            WHERE project_id = %s AND object_name = %s LIMIT 1;
+                        """, (project_id, obj_name))
+                        existing = cur.fetchone()
+                        
+                        if existing:
+                            mapping_id, locked = existing
+                            if not locked:
+                                cur.execute("""
+                                    UPDATE material_mappings
+                                    SET detected_class = %s, selected_material = %s, confidence = %s, reason = %s, correction_source = 'heuristic'
+                                    WHERE id = %s;
+                                """, (detected_class, selected_material, confidence, reason, mapping_id))
+                        else:
+                            mapping_id = f"mm_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                            cur.execute("""
+                                INSERT INTO material_mappings (id, project_id, object_name, detected_class, selected_material, confidence, locked, correction_source, reason)
+                                VALUES (%s, %s, %s, %s, %s, %s, FALSE, 'heuristic', %s);
+                            """, (mapping_id, project_id, obj_name, detected_class, selected_material, confidence, reason))
+                    conn.commit()
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Successfully saved material mapping guesses to database.", flush=True)
+                
+                # Auto-select the first candidate ("hero" view)
+                if candidates:
+                    selected_camera = candidates[0]
+                    clamped_settings["selected_camera"] = selected_camera
+                    clamped_settings["camera_candidates"] = candidates
+                    print(f"[{datetime.datetime.now().strftime('%T')}] Auto-selected default camera: {selected_camera['name']}", flush=True)
+                else:
+                    selected_camera = {"index": 0, "name": "hero", "location": [5.0, -5.0, 3.5], "rotation": [1.1, 0.0, 0.78]}
+            
+            # Execute Blender rendering pipeline to get spatial passes
+            print(f"[{datetime.datetime.now().strftime('%T')}] Proceeding with full render using selected camera...", flush=True)
+            blender_result = run_blender_pipeline(job_id, project_id, json.dumps(clamped_settings), local_model_path, selected_camera)
+            
+            # Upload outputs to S3 and register metadata in project_files
+            uploaded_outputs = {}
+            for slot_name, local_path in blender_result.get("outputs", {}).items():
+                s3_key = f"users/{user_id}/projects/{project_id}/outputs/blender_{job_id}_{slot_name}.png"
+                print(f"[{datetime.datetime.now().strftime('%T')}] Uploading {slot_name} to S3: {s3_key}", flush=True)
+                uploadFileFromWorker(local_path, s3_key)
+                uploaded_outputs[slot_name] = s3_key
+                
+                # Register in project_files table
+                file_id = f"file_{int(time.time() * 1000)}_{random.randint(0, 999)}"
+                metadata_json = json.dumps({
+                    "size": f"{(os.path.getsize(local_path) / 1024):.2f} KB",
+                    "uploadedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "role": "control_pass",
+                    "pass_type": slot_name,
+                    "sourceJobId": job_id
+                })
+                
+                cur.execute("""
+                    INSERT INTO project_files (id, project_id, file_url, file_type, metadata_json, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s);
+                """, (
+                    file_id, project_id, s3_key, "image/png", metadata_json, datetime.datetime.now(datetime.timezone.utc)
+                ))
+            conn.commit()
+
+            # Set local paths for ComfyUI client execution
+            local_input_path = blender_result["outputs"]["base_render"]
+            local_control_path = blender_result["outputs"]["line_map"]
+            local_depth_control_path = blender_result["outputs"]["depth_map"]
+            s3_control_key = uploaded_outputs["line_map"]
+            s3_depth_key = uploaded_outputs["depth_map"]
+            file_url = uploaded_outputs["base_render"]
+
+            # Standard defaults resolve
+            style_id = None
+            style_pref = clamped_settings.get("stylePreference")
+            prompt_text = clamped_settings.get("prompt")
+            negative_prompt_text = clamped_settings.get("negativePrompt") or clamped_settings.get("negative_prompt", "")
+            
+            if not prompt_text:
+                prompt_text = "high quality architectural rendering, photorealistic, natural lighting, detailed materials"
+                
+            if style_pref:
+                cur.execute("""
+                    SELECT id, prompt_template, negative_prompt 
+                    FROM styles 
+                    WHERE name = %s OR id = %s 
+                    LIMIT 1;
+                """, (style_pref, style_pref))
+                style_row = cur.fetchone()
+                if style_row:
+                    style_id, prompt_template, style_neg = style_row
+                    if not clamped_settings.get("prompt"):
+                        prompt_text = prompt_template
+                    if not negative_prompt_text and style_neg:
+                        negative_prompt_text = style_neg
+
         else:
             # 2. Fetch the latest input reference image from project_files with role/control-map filters
             cur.execute("""
@@ -1038,21 +940,17 @@ def _process_job_impl(conn, job):
                     if not negative_prompt_text and style_neg:
                         negative_prompt_text = style_neg
 
-        # 4. Create local job workspace
-        workspace_dir = os.path.join(config.LOCAL_WORKSPACE_ROOT, "jobs", job_id)
-        os.makedirs(workspace_dir, exist_ok=True)
+            # 4. Create local job workspace
+            workspace_dir = os.path.join(config.LOCAL_WORKSPACE_ROOT, "jobs", job_id)
+            os.makedirs(workspace_dir, exist_ok=True)
 
-        # 5. Download the input image
-        local_input_filename = f"input_{os.path.basename(file_url)}"
-        local_input_path = os.path.join(workspace_dir, local_input_filename)
-        
-        print(f"[{datetime.datetime.now().strftime('%T')}] Downloading input image from S3: {file_url} -> {local_input_path}", flush=True)
-        downloadFileToWorker(file_url, local_input_path)
+            # 5. Download the input image
+            local_input_filename = f"input_{os.path.basename(file_url)}"
+            local_input_path = os.path.join(workspace_dir, local_input_filename)
+            
+            print(f"[{datetime.datetime.now().strftime('%T')}] Downloading input image from S3: {file_url} -> {local_input_path}", flush=True)
+            downloadFileToWorker(file_url, local_input_path)
 
-        local_control_path = None
-        s3_control_key = None
-
-        if not is_upscale:
             # Acquire lock for CONTROL_MAP_PREPROCESSING
             if config.LOCAL_RESOURCE_LOCK_ENABLED:
                 acquired = False
@@ -1140,8 +1038,6 @@ def _process_job_impl(conn, job):
                 s3_control_key = None
 
             # 5c. Generate depth map locally (PIL only — no torch, no MiDaS, lightweight for 4GB VRAM)
-            local_depth_control_path = None
-            s3_depth_key = None
             try:
                 from PIL import Image, ImageFilter, ImageOps, ImageEnhance
                 local_depth_filename = f"depth_{job_id}.png"

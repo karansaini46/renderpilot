@@ -677,16 +677,10 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
     const filename = selectedFile.name;
     const fileExtension = filename.split('.').pop()?.toLowerCase() || '';
     const imageExtensions = ['png', 'jpg', 'jpeg', 'webp'];
-    const modelExtensions = ['blend', 'glb', 'obj', 'fbx', 'zip'];
+    const modelExtensions = ['blend', 'skp', 'glb', 'obj', 'fbx', 'zip'];
 
-    // If it's a 3D model file, show the placeholder warning
-    if (modelExtensions.includes(fileExtension)) {
-      setUploadError('3D Model upload (e.g. .blend, .glb) is coming in a future update. Please upload reference image inputs (.png, .jpg, .jpeg, .webp) for ControlNet extraction first.');
-      return;
-    }
-
-    if (!imageExtensions.includes(fileExtension)) {
-      setUploadError('Unsupported file type. Please upload images (.png, .jpg, .jpeg, .webp) only.');
+    if (!imageExtensions.includes(fileExtension) && !modelExtensions.includes(fileExtension)) {
+      setUploadError('Unsupported file type. Please upload images (.png, .jpg, .jpeg, .webp) or 3D models (.blend, .skp, .glb, .obj, .fbx) only.');
       return;
     }
 
@@ -991,11 +985,11 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                         className="hidden" 
                         onChange={handleFileUpload}
                         disabled={uploadProgress !== null}
-                        accept="image/*,.blend,.glb,.obj,.fbx"
+                        accept="image/*,.blend,.glb,.obj,.fbx,.skp"
                       />
                       <Upload className="h-7 w-7 text-indigo-400 mx-auto" />
-                      <h3 className="text-xs font-bold text-slate-300 mt-2.5">Upload image inputs (.png, .jpg, .jpeg, .webp)</h3>
-                      <p className="text-[10px] text-slate-500 mt-1">Direct upload to S3/Local cache. 3D models will show placeholder warnings.</p>
+                      <h3 className="text-xs font-bold text-slate-300 mt-2.5">Upload image inputs (.png, .jpg, .jpeg, .webp) or 3D models (.blend, .skp, .glb, .obj, .fbx)</h3>
+                      <p className="text-[10px] text-slate-500 mt-1">Direct upload to S3/Local cache. 3D models are automatically preprocessed by the CAD pipeline.</p>
                       
                       {uploadProgress !== null && (
                         <div className="max-w-xs mx-auto mt-4">
@@ -1018,13 +1012,13 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                     )}
                   </div>
 
-                  {/* 3D Model placeholder placeholder notification */}
+                  {/* 3D Model status notification */}
                   <div className="p-4.5 rounded-lg bg-slate-950 border border-slate-900 flex items-start space-x-3.5">
                     <FolderOpen className="h-5 w-5 text-indigo-400/80 shrink-0 mt-0.5" />
                     <div>
-                      <h4 className="text-xs font-bold text-slate-300">3D Design Models (Blender/CAD)</h4>
+                      <h4 className="text-xs font-bold text-slate-300">3D Design Models Enabled</h4>
                       <p className="text-[10px] text-slate-500 mt-1 leading-relaxed">
-                        [Planned Feature] Drag-and-drop support for `.blend` scene hierarchies and `.glb` mesh models will be integrated in the next milestone release to feed the local asset extraction worker directly.
+                        Direct upload support for SketchUp (`.skp`), Blender (`.blend`), and other CAD/3D formats (`.glb`, `.obj`, `.fbx`) is active. The worker pipeline automatically processes models to generate geometry-aligned photorealistic renders.
                       </p>
                     </div>
                   </div>
