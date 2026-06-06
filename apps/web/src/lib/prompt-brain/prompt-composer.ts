@@ -202,15 +202,21 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
   let strictStructurePositive = '';
   if (geometryLockMode === 'strict_structure') {
     const strictPositiveTerms = [
-      'photorealistic architectural render optimization',
-      'realistic materials',
-      'natural lighting',
-      'accurate shadows',
-      'glass reflections',
-      'realistic texture detail',
-      'professional archviz polish',
-      'same building geometry',
-      'same camera composition'
+      'premium photorealistic architectural visualization',
+      'realistic exterior materials',
+      'white smooth plaster walls',
+      'realistic glass balcony railing with reflections',
+      'natural wooden gate and facade panels',
+      'aluminum window frames',
+      'concrete slab edges',
+      'sharp architectural lines',
+      'realistic daylight',
+      'sun-cast shadows',
+      'ambient occlusion',
+      'global illumination',
+      'contact shadows',
+      'ultra-detailed textures',
+      'professional archviz render'
     ];
     strictStructurePositive = sanitizeAndReport(strictPositiveTerms.join(', '), 'unknown');
   }
@@ -318,24 +324,25 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
 
   const strictStructureNegativeTerms = geometryLockMode === 'strict_structure'
     ? [
-        'changed building structure',
-        'changed facade',
-        'moved windows',
-        'extra floors',
-        'missing windows',
-        'changed roofline',
-        'distorted geometry',
-        'new architecture',
-        'redesigned building',
-        'changed camera angle',
-        'warped doors',
-        'hallucinated openings',
-        'unrealistic proportions',
         'warped architecture',
+        'changed facade',
+        'distorted building',
+        'crooked walls',
+        'bent balcony',
         'extra windows',
-        'bent railings',
+        'missing windows',
+        'deformed railings',
         'changed gate',
-        'crooked walls'
+        'bad human',
+        'distorted person',
+        'blurry',
+        'cartoon',
+        'sketch',
+        'painting',
+        'plastic texture',
+        'low detail',
+        'oversmoothed',
+        'unrealistic lighting'
       ]
     : [];
 

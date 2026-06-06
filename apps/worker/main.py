@@ -1368,6 +1368,8 @@ def _process_job_impl(conn, job):
             
             edge_control_strength = clamped_settings.get("edge_control_strength") if clamped_settings else None
             depth_control_strength = clamped_settings.get("depth_control_strength") if clamped_settings else None
+            upscale_factor = clamped_settings.get("upscale_factor") if clamped_settings else None
+            upscale_denoise = clamped_settings.get("upscale_denoise") if clamped_settings else None
 
             output_paths = comfy_client.render(
                 template_name="img2img_default",
@@ -1387,7 +1389,9 @@ def _process_job_impl(conn, job):
                 on_progress=on_comfyui_progress,
                 prompt_brain_provider=prompt_brain_provider,
                 edge_control_strength=edge_control_strength,
-                depth_control_strength=depth_control_strength
+                depth_control_strength=depth_control_strength,
+                upscale_factor=upscale_factor,
+                upscale_denoise=upscale_denoise
             )
             
             if not output_paths:

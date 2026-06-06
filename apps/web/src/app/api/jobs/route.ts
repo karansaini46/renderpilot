@@ -611,9 +611,9 @@ export async function POST(request: Request) {
 
     if (geometryLockMode === 'technical' || geometryLockMode === 'strict' || geometryLockMode === 'strict_structure') {
       if (denoise === undefined || denoise === null) {
-        denoise = 0.30;
+        denoise = 0.38;
       } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.35);
+        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.45);
       }
       if (userSettings.edge_control_strength === undefined) {
         edgeStrength = 0.90;
@@ -624,9 +624,9 @@ export async function POST(request: Request) {
       console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
     } else if (geometryLockMode === 'accurate') {
       if (denoise === undefined || denoise === null) {
-        denoise = 0.30;
+        denoise = 0.38;
       } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.35);
+        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.45);
       }
       if (userSettings.edge_control_strength === undefined) {
         edgeStrength = 0.90;
@@ -663,9 +663,9 @@ export async function POST(request: Request) {
       console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
     } else {
       if (denoise === undefined || denoise === null) {
-        denoise = 0.30;
+        denoise = 0.38;
       } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.35);
+        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.45);
       }
       if (userSettings.edge_control_strength === undefined) {
         edgeStrength = 0.90;
@@ -697,6 +697,8 @@ export async function POST(request: Request) {
     if (userSettings.steps) finalSettings.steps = userSettings.steps;
     if (userSettings.cfg_scale) finalSettings.cfg_scale = userSettings.cfg_scale;
     if (userSettings.seed) finalSettings.seed = userSettings.seed;
+    if (userSettings.upscale_factor !== undefined) finalSettings.upscale_factor = userSettings.upscale_factor;
+    if (userSettings.upscale_denoise !== undefined) finalSettings.upscale_denoise = userSettings.upscale_denoise;
 
     // Compute deterministic cache key from render-critical parameters
     const inputFileUrl = project.projectFiles[0]?.fileUrl || '';
