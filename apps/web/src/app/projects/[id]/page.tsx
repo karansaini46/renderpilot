@@ -501,7 +501,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
     
     const activeSceneType = project.sceneType || 'Exterior';
     let stylePresetId = matchingPreset?.id || 'style_mod_lux_ext';
-    let geometryMode = matchingPreset?.defaultGeometryLockMode || 'balanced_archviz';
+    let geometryMode: string = matchingPreset?.defaultGeometryLockMode || 'balanced_archviz';
 
     if (geometryMode === 'strict_geometry' || geometryMode === 'strict' || geometryMode === 'accurate' || geometryMode === 'technical' || geometryMode === 'strict_structure') {
       geometryMode = 'strict_geometry';
@@ -519,7 +519,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
       const fallbackPreset = STYLE_PRESETS.find(s => !s.allowedSceneTypes || s.allowedSceneTypes.includes(activeSceneType));
       if (fallbackPreset) {
         stylePresetId = fallbackPreset.id;
-        const fbLockMode = fallbackPreset.defaultGeometryLockMode || 'balanced_archviz';
+        const fbLockMode: string = fallbackPreset.defaultGeometryLockMode || 'balanced_archviz';
         if (fbLockMode === 'strict_geometry' || fbLockMode === 'strict' || fbLockMode === 'accurate' || fbLockMode === 'technical' || fbLockMode === 'strict_structure') {
           geometryMode = 'strict_geometry';
         } else if (fbLockMode === 'balanced_archviz' || fbLockMode === 'balanced' || fbLockMode === 'balanced_enhancement') {
