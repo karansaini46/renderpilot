@@ -339,11 +339,24 @@ class ComfyUIClient:
 
         # Check ControlNet model availability (both depth and canny) and presence of images
         available_cn = self.get_available_controlnets()
-        canny_model = self.find_best_controlnet("canny", available_cn)
-        depth_model = self.find_best_controlnet("depth", available_cn)
 
-        has_canny = canny_model is not None and (resolved_control_image is not None)
-        has_depth = depth_model is not None and (resolved_depth_control_image is not None)
+        has_canny_model = False
+        has_depth_model = False
+
+        canny_in_template = workflow.get("13", {}).get("inputs", {}).get("control_net_name")
+        if canny_in_template in available_cn:
+            has_canny_model = True
+        elif self.find_best_controlnet("canny", available_cn) is not None:
+            has_canny_model = True
+
+        depth_in_template = workflow.get("10", {}).get("inputs", {}).get("control_net_name")
+        if depth_in_template in available_cn:
+            has_depth_model = True
+        elif self.find_best_controlnet("depth", available_cn) is not None:
+            has_depth_model = True
+
+        has_canny = has_canny_model and (resolved_control_image is not None)
+        has_depth = has_depth_model and (resolved_depth_control_image is not None)
 
         if not has_depth or not has_canny:
             if not has_depth and not has_canny:
@@ -406,15 +419,22 @@ class ComfyUIClient:
                     else:
                         inputs['strength'] = control_strength
 
-            # ControlNetLoader node — preserve existing model name (depth vs canny)
+            # ControlNetLoader node — preserve existing model name unless not available
             if class_type == 'ControlNetLoader':
-                meta_title = node.get('_meta', {}).get('title', '').lower()
-                if 'canny' in meta_title or 'edge' in meta_title:
-                    if canny_model:
-                        inputs['control_net_name'] = canny_model
-                elif 'depth' in meta_title:
-                    if depth_model:
-                        inputs['control_net_name'] = depth_model
+                if 'control_net_name' in inputs:
+                    current_cn = inputs['control_net_name']
+                    meta_title = node.get('_meta', {}).get('title', '').lower()
+                    
+                    if current_cn not in available_cn:
+                        # Fallback: Find matching available model
+                        pattern = "canny" if ('canny' in meta_title or 'edge' in meta_title) else "depth"
+                        fallback_cn = self.find_best_controlnet(pattern, available_cn)
+                        if fallback_cn:
+                            inputs['control_net_name'] = fallback_cn
+                            print(f"[ControlNet Fallback] Model '{current_cn}' not found. Falling back to available model: '{fallback_cn}'.", file=sys.stderr)
+                        elif available_cn:
+                            inputs['control_net_name'] = available_cn[0]
+                            print(f"[ControlNet Fallback] Model '{current_cn}' not found and no pattern match. Falling back to: '{available_cn[0]}'.", file=sys.stderr)
 
             # CLIP Text Encode nodes — inject prompts with constraints
             if class_type == 'CLIPTextEncode':
