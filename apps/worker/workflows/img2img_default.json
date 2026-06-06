@@ -1,7 +1,7 @@
 {
   "1": { "class_type": "LoadImage", "inputs": { "image": "input.png" }, "_meta": { "title": "Load Input Image" } },
   "2": { "class_type": "VAEEncode", "inputs": { "pixels": ["1", 0], "vae": ["4", 2] }, "_meta": { "title": "VAE Encode" } },
-  "4": { "class_type": "CheckpointLoaderSimple", "inputs": { "ckpt_name": "Juggernaut_XL.safetensors" }, "_meta": { "title": "Load Checkpoint" } },
+  "4": { "class_type": "CheckpointLoaderSimple", "inputs": { "ckpt_name": "realisticVisionV60B1_v60B1VAE.safetensors" }, "_meta": { "title": "Load Checkpoint" } },
   "6": { "class_type": "CLIPTextEncode", "inputs": { "clip": ["4", 1], "text": "placeholder positive" }, "_meta": { "title": "Positive Prompt" } },
   "7": { "class_type": "CLIPTextEncode", "inputs": { "clip": ["4", 1], "text": "placeholder negative" }, "_meta": { "title": "Negative Prompt" } },
   "10": { "class_type": "ControlNetLoader", "inputs": { "control_net_name": "control_v11f1p_sd15_depth.pth" }, "_meta": { "title": "Load Depth ControlNet" } },

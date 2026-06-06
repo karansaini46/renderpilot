@@ -582,16 +582,16 @@ export async function POST(request: Request) {
     finalSettings.materialChoices = combinedMaterials;
     finalSettings.renderMode = userSettings.job_type || userSettings.jobType || composerResult.renderMode;
     // Resolve mode and parameters
-    const geometryLockMode = userSettings.geometryLockMode || finalSettings.geometryLockMode || composerResult.geometryLockMode || 'strict_structure';
+    const geometryLockMode = userSettings.geometryLockMode || finalSettings.geometryLockMode || composerResult.geometryLockMode || 'balanced_archviz';
     let renderMode = geometryLockMode;
-    if (renderMode === 'strict' || renderMode === 'accurate' || renderMode === 'technical' || renderMode === 'strict_structure') {
-      renderMode = 'strict_structure';
-    } else if (renderMode === 'balanced' || renderMode === 'balanced_enhancement') {
-      renderMode = 'balanced_enhancement';
-    } else if (renderMode === 'creative' || renderMode === 'creative_concept') {
-      renderMode = 'creative_concept';
+    if (renderMode === 'strict_geometry' || renderMode === 'strict' || renderMode === 'accurate' || renderMode === 'technical' || renderMode === 'strict_structure') {
+      renderMode = 'strict_geometry';
+    } else if (renderMode === 'balanced_archviz' || renderMode === 'balanced' || renderMode === 'balanced_enhancement') {
+      renderMode = 'balanced_archviz';
+    } else if (renderMode === 'high_realism' || renderMode === 'creative' || renderMode === 'creative_concept') {
+      renderMode = 'high_realism';
     } else {
-      renderMode = 'strict_structure';
+      renderMode = 'balanced_archviz';
     }
 
     let denoise = userSettings.denoise !== undefined ? userSettings.denoise : composerResult.denoise;
@@ -609,11 +609,33 @@ export async function POST(request: Request) {
         ? Number(stylePreset.defaultSettings.depth_control_strength)
         : 0.75);
 
-    if (geometryLockMode === 'technical' || geometryLockMode === 'strict' || geometryLockMode === 'strict_structure') {
+    let steps = userSettings.steps !== undefined ? userSettings.steps : undefined;
+    let cfgScale = userSettings.cfg_scale !== undefined ? userSettings.cfg_scale : undefined;
+
+    if (renderMode === 'strict_geometry') {
+      if (denoise === undefined || denoise === null) {
+        denoise = 0.32;
+      } else {
+        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.45);
+      }
+      if (userSettings.edge_control_strength === undefined) {
+        edgeStrength = 0.95;
+      }
+      if (userSettings.depth_control_strength === undefined) {
+        depthStrength = 0.80;
+      }
+      if (steps === undefined) {
+        steps = 30;
+      }
+      if (cfgScale === undefined) {
+        cfgScale = 6.0;
+      }
+      console.log('[Denoise Debug] mode:', renderMode, 'denoise:', denoise, 'source: mode_clamp')
+    } else if (renderMode === 'balanced_archviz') {
       if (denoise === undefined || denoise === null) {
         denoise = 0.38;
       } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.45);
+        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.50);
       }
       if (userSettings.edge_control_strength === undefined) {
         edgeStrength = 0.90;
@@ -621,46 +643,32 @@ export async function POST(request: Request) {
       if (userSettings.depth_control_strength === undefined) {
         depthStrength = 0.75;
       }
-      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
-    } else if (geometryLockMode === 'accurate') {
+      if (steps === undefined) {
+        steps = 32;
+      }
+      if (cfgScale === undefined) {
+        cfgScale = 6.5;
+      }
+      console.log('[Denoise Debug] mode:', renderMode, 'denoise:', denoise, 'source: mode_clamp')
+    } else if (renderMode === 'high_realism') {
       if (denoise === undefined || denoise === null) {
-        denoise = 0.38;
+        denoise = 0.43;
       } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.45);
+        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.55);
       }
       if (userSettings.edge_control_strength === undefined) {
-        edgeStrength = 0.90;
+        edgeStrength = 0.85;
       }
       if (userSettings.depth_control_strength === undefined) {
-        depthStrength = 0.75;
+        depthStrength = 0.70;
       }
-      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
-    } else if (geometryLockMode === 'balanced' || geometryLockMode === 'balanced_enhancement') {
-      if (denoise === undefined || denoise === null) {
-        denoise = 0.65;
-      } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.60), 0.75);
+      if (steps === undefined) {
+        steps = 35;
       }
-      if (userSettings.edge_control_strength === undefined) {
-        edgeStrength = 0.75;
+      if (cfgScale === undefined) {
+        cfgScale = 6.5;
       }
-      if (userSettings.depth_control_strength === undefined) {
-        depthStrength = 0.75;
-      }
-      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
-    } else if (geometryLockMode === 'creative' || geometryLockMode === 'creative_concept') {
-      if (denoise === undefined || denoise === null) {
-        denoise = 0.80;
-      } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.72), 0.88);
-      }
-      if (userSettings.edge_control_strength === undefined) {
-        edgeStrength = 0.40;
-      }
-      if (userSettings.depth_control_strength === undefined) {
-        depthStrength = 0.40;
-      }
-      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
+      console.log('[Denoise Debug] mode:', renderMode, 'denoise:', denoise, 'source: mode_clamp')
     } else {
       if (denoise === undefined || denoise === null) {
         denoise = 0.38;
@@ -673,7 +681,13 @@ export async function POST(request: Request) {
       if (userSettings.depth_control_strength === undefined) {
         depthStrength = 0.75;
       }
-      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
+      if (steps === undefined) {
+        steps = 32;
+      }
+      if (cfgScale === undefined) {
+        cfgScale = 6.5;
+      }
+      console.log('[Denoise Debug] mode:', renderMode, 'denoise:', denoise, 'source: mode_clamp')
     }
 
     finalSettings.render_mode = renderMode;
@@ -683,6 +697,8 @@ export async function POST(request: Request) {
     finalSettings.denoise_strength = denoise;
     finalSettings.edge_control_strength = edgeStrength;
     finalSettings.depth_control_strength = depthStrength;
+    finalSettings.steps = steps;
+    finalSettings.cfg_scale = cfgScale;
     finalSettings.geometry_drift_score = null;
     finalSettings.structure_check_status = null;
     
@@ -699,6 +715,12 @@ export async function POST(request: Request) {
     if (userSettings.seed) finalSettings.seed = userSettings.seed;
     if (userSettings.upscale_factor !== undefined) finalSettings.upscale_factor = userSettings.upscale_factor;
     if (userSettings.upscale_denoise !== undefined) finalSettings.upscale_denoise = userSettings.upscale_denoise;
+
+    // Log job parameters
+    console.log(`[Gemini Enhancement] applied/skipped/failed status: ${geminiEnhancerStatus.status}${geminiEnhancerStatus.error ? ` (error: ${geminiEnhancerStatus.error})` : ''}`);
+    console.log(`[Job Render Profile] Chosen profile: ${finalSettings.geometryLockMode}`);
+    console.log(`[Job First Pass Settings] steps: ${finalSettings.steps}, cfg: ${finalSettings.cfg_scale}, denoise: ${finalSettings.denoise_strength}, canny strength: ${finalSettings.edge_control_strength}, depth strength: ${finalSettings.depth_control_strength}`);
+    console.log(`[Job Second Pass Settings] upscale_factor: ${finalSettings.upscale_factor}, upscale_denoise: ${finalSettings.upscale_denoise}`);
 
     // Compute deterministic cache key from render-critical parameters
     const inputFileUrl = project.projectFiles[0]?.fileUrl || '';

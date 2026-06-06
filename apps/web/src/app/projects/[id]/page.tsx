@@ -136,7 +136,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
   const [selectedSceneType, setSelectedSceneType] = useState('Exterior');
   const [selectedProjectType, setSelectedProjectType] = useState('Residential');
   const [selectedMaterials, setSelectedMaterials] = useState<string[]>([]);
-  const [selectedGeometryLockMode, setSelectedGeometryLockMode] = useState('strict_structure');
+  const [selectedGeometryLockMode, setSelectedGeometryLockMode] = useState('balanced_archviz');
   const [forceRegenerate, setForceRegenerate] = useState(false);
   const [promptModifier, setPromptModifier] = useState('');
 
@@ -501,16 +501,16 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
     
     const activeSceneType = project.sceneType || 'Exterior';
     let stylePresetId = matchingPreset?.id || 'style_mod_lux_ext';
-    let geometryMode = matchingPreset?.defaultGeometryLockMode || 'strict_structure';
+    let geometryMode = matchingPreset?.defaultGeometryLockMode || 'balanced_archviz';
 
-    if (geometryMode === 'accurate' || geometryMode === 'technical' || geometryMode === 'strict_structure') {
-      geometryMode = 'strict_structure';
-    } else if (geometryMode === 'balanced' || geometryMode === 'balanced_enhancement') {
-      geometryMode = 'balanced_enhancement';
-    } else if (geometryMode === 'creative' || geometryMode === 'creative_concept') {
-      geometryMode = 'creative_concept';
+    if (geometryMode === 'strict_geometry' || geometryMode === 'strict' || geometryMode === 'accurate' || geometryMode === 'technical' || geometryMode === 'strict_structure') {
+      geometryMode = 'strict_geometry';
+    } else if (geometryMode === 'balanced_archviz' || geometryMode === 'balanced' || geometryMode === 'balanced_enhancement') {
+      geometryMode = 'balanced_archviz';
+    } else if (geometryMode === 'high_realism' || geometryMode === 'creative' || geometryMode === 'creative_concept') {
+      geometryMode = 'high_realism';
     } else {
-      geometryMode = 'strict_structure';
+      geometryMode = 'balanced_archviz';
     }
 
     // Verify compatibility of current preset with the active sceneType
@@ -519,13 +519,13 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
       const fallbackPreset = STYLE_PRESETS.find(s => !s.allowedSceneTypes || s.allowedSceneTypes.includes(activeSceneType));
       if (fallbackPreset) {
         stylePresetId = fallbackPreset.id;
-        const fbLockMode = fallbackPreset.defaultGeometryLockMode || 'strict_structure';
-        if (fbLockMode === 'accurate' || fbLockMode === 'technical' || fbLockMode === 'strict_structure') {
-          geometryMode = 'strict_structure';
-        } else if (fbLockMode === 'balanced' || fbLockMode === 'balanced_enhancement') {
-          geometryMode = 'balanced_enhancement';
-        } else if (fbLockMode === 'creative' || fbLockMode === 'creative_concept') {
-          geometryMode = 'creative_concept';
+        const fbLockMode = fallbackPreset.defaultGeometryLockMode || 'balanced_archviz';
+        if (fbLockMode === 'strict_geometry' || fbLockMode === 'strict' || fbLockMode === 'accurate' || fbLockMode === 'technical' || fbLockMode === 'strict_structure') {
+          geometryMode = 'strict_geometry';
+        } else if (fbLockMode === 'balanced_archviz' || fbLockMode === 'balanced' || fbLockMode === 'balanced_enhancement') {
+          geometryMode = 'balanced_archviz';
+        } else if (fbLockMode === 'high_realism' || fbLockMode === 'creative' || fbLockMode === 'creative_concept') {
+          geometryMode = 'high_realism';
         }
       }
     }
@@ -578,7 +578,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
             sceneType: project.sceneType || 'Exterior',
             projectType: project.projectType || 'Residential',
             materialChoices: [],
-            geometryLockMode: 'strict_structure',
+            geometryLockMode: 'strict_geometry',
             denoise: newDenoise,
             promptModifier: prevPromptModifier || undefined
           })
@@ -2263,22 +2263,22 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                   {[
                     {
-                      id: 'strict_structure',
-                      name: 'Strict Lock (Recommended)',
-                      desc: 'Preserves building structure, camera angle, and elements strictly. Focuses on photorealistic materials and lighting without altering layout.',
-                      badge: 'Strict Lock'
+                      id: 'strict_geometry',
+                      name: 'Strict Geometry',
+                      desc: 'Locks the building shape, windows, doors, walls, balconies, gate, and camera angle strictly. Improves textures, lighting, and materials without changing geometry.',
+                      badge: 'Strict Geometry'
                     },
                     {
-                      id: 'balanced_enhancement',
-                      name: 'Balanced Enhancement',
-                      desc: 'Balances structural preservation with creative material and layout updates.',
-                      badge: 'Balanced Lock'
+                      id: 'balanced_archviz',
+                      name: 'Balanced Archviz (Default)',
+                      desc: 'Balances precise structural preservation with natural style enhancements, daylight shading, and vegetation polish.',
+                      badge: 'Balanced Archviz'
                     },
                     {
-                      id: 'creative_concept',
-                      name: 'Creative Concept',
-                      desc: 'Provides high creative freedom for design variations and early concepts. Output is labeled as a concept.',
-                      badge: 'Creative Lock'
+                      id: 'high_realism',
+                      name: 'High Realism',
+                      desc: 'Allows slight structural variance to maximize texture detail, realistic shadows, reflections, and cinematic lighting.',
+                      badge: 'High Realism'
                     }
                   ].map((mode) => {
                     const isSelected = selectedGeometryLockMode === mode.id;

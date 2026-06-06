@@ -1307,22 +1307,25 @@ def _process_job_impl(conn, job):
         
         if not is_upscale:
             # Resolve geometry lock mode and render mode
-            geometry_lock_mode = (clamped_settings.get("render_mode") or clamped_settings.get("geometryLockMode") or clamped_settings.get("geometry_lock_mode") or "strict_structure").lower()
+            geometry_lock_mode = (clamped_settings.get("render_mode") or clamped_settings.get("geometryLockMode") or clamped_settings.get("geometry_lock_mode") or "balanced_archviz").lower()
             
             # Use safe defaults only when denoise is missing
             denoise = clamped_settings.get("denoise")
             if denoise is None:
                 mode_denoise_map = {
-                    "creative": 0.80,
-                    "creative_concept": 0.80,
-                    "balanced": 0.65,
-                    "balanced_enhancement": 0.65,
-                    "accurate": 0.60,
-                    "technical": 0.35,
-                    "strict_structure": 0.35,
-                    "faithful": 0.35
+                    "strict_geometry": 0.32,
+                    "strict_structure": 0.32,
+                    "balanced_archviz": 0.38,
+                    "balanced_enhancement": 0.38,
+                    "high_realism": 0.43,
+                    "creative_concept": 0.43,
+                    "creative": 0.43,
+                    "balanced": 0.38,
+                    "accurate": 0.38,
+                    "technical": 0.32,
+                    "faithful": 0.32
                 }
-                denoise = mode_denoise_map.get(geometry_lock_mode, 0.60)
+                denoise = mode_denoise_map.get(geometry_lock_mode, 0.38)
                 print(f"[Denoise Trace] Denoise resolved to {denoise} from mode_denoise_map (mode: {geometry_lock_mode})", flush=True)
             else:
                 print(f"[Denoise Trace] Denoise resolved to {denoise} from job settings / preference memory", flush=True)

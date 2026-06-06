@@ -200,23 +200,23 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
 
   // Strict structure positive terms injection
   let strictStructurePositive = '';
-  if (geometryLockMode === 'strict_structure') {
+  if (geometryLockMode === 'strict_structure' || geometryLockMode === 'strict_geometry' || geometryLockMode === 'balanced_archviz' || geometryLockMode === 'high_realism') {
     const strictPositiveTerms = [
       'premium photorealistic architectural visualization',
       'realistic exterior materials',
       'white smooth plaster walls',
-      'realistic glass balcony railing with reflections',
-      'natural wooden gate and facade panels',
+      'natural wood gate/facade details',
+      'realistic glass railings with reflections',
       'aluminum window frames',
       'concrete slab edges',
       'sharp architectural lines',
       'realistic daylight',
       'sun-cast shadows',
       'ambient occlusion',
-      'global illumination',
       'contact shadows',
-      'ultra-detailed textures',
-      'professional archviz render'
+      'global illumination',
+      'realistic texture detail',
+      'professional archviz render quality'
     ];
     strictStructurePositive = sanitizeAndReport(strictPositiveTerms.join(', '), 'unknown');
   }
@@ -322,7 +322,8 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
     'layout change', 'camera shift', 'low quality', 'text', 'watermark'
   ];
 
-  const strictStructureNegativeTerms = geometryLockMode === 'strict_structure'
+  const isStrictOrArchvizMode = ['strict_structure', 'strict_geometry', 'balanced_archviz', 'high_realism'].includes(geometryLockMode);
+  const strictStructureNegativeTerms = isStrictOrArchvizMode
     ? [
         'warped architecture',
         'changed facade',
@@ -331,18 +332,19 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
         'bent balcony',
         'extra windows',
         'missing windows',
-        'deformed railings',
         'changed gate',
-        'bad human',
-        'distorted person',
-        'blurry',
+        'deformed railings',
+        'bad perspective',
         'cartoon',
         'sketch',
         'painting',
         'plastic texture',
+        'blurry',
         'low detail',
         'oversmoothed',
-        'unrealistic lighting'
+        'unrealistic lighting',
+        'distorted person',
+        'bad human'
       ]
     : [];
 
@@ -363,13 +365,13 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
   // 14. Determine fallback settings
   const finalRenderMode = renderMode || analysis.suggested_render_mode || 'img2img';
   
-  let defaultDenoise = stylePreset.defaultSettings?.denoise ?? 0.65;
-  if (geometryLockMode === 'strict_structure') {
-    defaultDenoise = 0.25;
-  } else if (geometryLockMode === 'balanced_enhancement') {
-    defaultDenoise = 0.40;
-  } else if (geometryLockMode === 'creative_concept') {
-    defaultDenoise = 0.65;
+  let defaultDenoise = stylePreset.defaultSettings?.denoise ?? 0.38;
+  if (geometryLockMode === 'strict_geometry' || geometryLockMode === 'strict_structure') {
+    defaultDenoise = 0.32;
+  } else if (geometryLockMode === 'balanced_archviz' || geometryLockMode === 'balanced_enhancement') {
+    defaultDenoise = 0.38;
+  } else if (geometryLockMode === 'high_realism' || geometryLockMode === 'creative_concept') {
+    defaultDenoise = 0.43;
   }
 
   const denoise = typeof analysis.suggested_denoise === 'number'

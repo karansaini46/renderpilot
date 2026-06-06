@@ -10,7 +10,7 @@ export type SceneType = typeof SCENE_TYPES[number];
 export const RENDER_MODES = ['base_render_model', 'img2img', 'upscale_selected'] as const;
 export type RenderMode = typeof RENDER_MODES[number];
 
-export const GEOMETRY_LOCK_MODES = ['creative', 'balanced', 'accurate', 'technical', 'strict_structure', 'balanced_enhancement', 'creative_concept'] as const;
+export const GEOMETRY_LOCK_MODES = ['creative', 'balanced', 'accurate', 'technical', 'strict_structure', 'balanced_enhancement', 'creative_concept', 'strict_geometry', 'balanced_archviz', 'high_realism'] as const;
 export type GeometryLockMode = typeof GEOMETRY_LOCK_MODES[number];
 
 export const VALID_MATERIAL_CATEGORIES = [

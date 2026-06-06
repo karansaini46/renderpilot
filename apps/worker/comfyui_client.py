@@ -129,7 +129,10 @@ class ComfyUIClient:
         matches = [m for m in available_models if pattern in m.lower()]
         if not matches:
             return None
-        matches.sort(key=lambda x: ("sdxl" in x.lower() or "xl" in x.lower()), reverse=True)
+        # Prioritize SD1.5 models (e.g. containing 'sd15', 'v11', or not containing 'xl'/'sdxl')
+        matches.sort(key=lambda x: (
+            ("sd15" in x.lower() or "v11" in x.lower()) and not ("sdxl" in x.lower() or "xl" in x.lower())
+        ), reverse=True)
         return matches[0]
 
     def check_controlnet_available(self, model_name: str) -> bool:
@@ -258,7 +261,7 @@ class ComfyUIClient:
         """
         # Map geometry lock mode to ComfyUI variables
         # Dual ControlNet strength profiles: (depth_strength, canny_strength)
-        mode = (geometry_lock_mode or 'accurate').lower()
+        mode = (geometry_lock_mode or 'balanced_archviz').lower()
 
         control_strength_map = {
             'creative': 0.40,
@@ -269,7 +272,11 @@ class ComfyUIClient:
             'creative_concept': 0.35,
             'balanced_enhancement': 0.55,
             'strict_structure': 0.90,
-            'faithful': 0.90
+            'faithful': 0.90,
+            # New profiles:
+            'strict_geometry': 0.80,      # depth 0.80
+            'balanced_archviz': 0.75,     # depth 0.75
+            'high_realism': 0.70,         # depth 0.70
         }
 
         canny_strength_map = {
@@ -281,7 +288,11 @@ class ComfyUIClient:
             'creative_concept': 0.25,
             'balanced_enhancement': 0.38,
             'strict_structure': 0.60,
-            'faithful': 0.60
+            'faithful': 0.60,
+            # New profiles:
+            'strict_geometry': 0.95,      # canny 0.95
+            'balanced_archviz': 0.90,     # canny 0.90
+            'high_realism': 0.85,         # canny 0.85
         }
 
         mode_depth_strength = control_strength_map.get(mode, 0.75)
@@ -295,23 +306,20 @@ class ComfyUIClient:
             'accurate': 0.90,
             'technical': 1.0,
             'strict_structure': 1.0,
-            'faithful': 1.0
+            'faithful': 1.0,
+            'strict_geometry': 1.0,
+            'balanced_archviz': 1.0,
+            'high_realism': 1.0
         }
         control_strength = generic_strength_map.get(mode, 0.90)
 
         prompt_constraint = ""
-        if mode == 'strict_structure':
+        if mode in ('strict_geometry', 'strict_structure'):
             prompt_constraint = "photorealistic architectural render optimization, realistic materials, natural lighting, accurate shadows, glass reflections, realistic texture detail, professional archviz polish, same building geometry, same camera composition"
-        elif mode == 'balanced_enhancement':
+        elif mode in ('balanced_archviz', 'balanced_enhancement', 'balanced'):
             prompt_constraint = "preserves composition, balanced style changes"
-        elif mode == 'creative_concept':
-            prompt_constraint = "more visual freedom, creative details, concept rendering"
-        elif mode == 'creative':
+        elif mode in ('high_realism', 'creative_concept', 'creative'):
             prompt_constraint = "more visual freedom, creative details"
-        elif mode == 'balanced':
-            prompt_constraint = "preserves composition, balanced style changes"
-        elif mode == 'accurate':
-            prompt_constraint = "strict composition preservation, realistic structure, client-ready layout"
         elif mode in ('technical', 'faithful'):
             prompt_constraint = "strongest preservation of contours, exact geometry, technical blueprint match"
         else:
@@ -323,10 +331,12 @@ class ComfyUIClient:
 
         mapped_denoise = denoise
         if mapped_denoise is None:
-            if mode in ("creative_concept", "creative"):
-                mapped_denoise = 0.65
-            elif mode in ("balanced_enhancement", "balanced"):
-                mapped_denoise = 0.40
+            if mode in ('strict_geometry', 'strict_structure'):
+                mapped_denoise = 0.32
+            elif mode in ('balanced_archviz', 'balanced_enhancement', 'balanced'):
+                mapped_denoise = 0.38
+            elif mode in ('high_realism', 'creative_concept', 'creative'):
+                mapped_denoise = 0.43
             else:
                 mapped_denoise = 0.38
 
@@ -435,6 +445,7 @@ class ComfyUIClient:
                         elif available_cn:
                             inputs['control_net_name'] = available_cn[0]
                             print(f"[ControlNet Fallback] Model '{current_cn}' not found and no pattern match. Falling back to: '{available_cn[0]}'.", file=sys.stderr)
+                    print(f"[ControlNet Loader] ControlNet: {class_type} for title '{meta_title}' configured to use model '{inputs['control_net_name']}'")
 
             # CLIP Text Encode nodes — inject prompts with constraints
             if class_type == 'CLIPTextEncode':
@@ -476,9 +487,13 @@ class ComfyUIClient:
                         if resp.ok:
                             models = resp.json().get('CheckpointLoaderSimple', {}).get('input', {}).get('required', {}).get('ckpt_name', [])[0]
                             if models:
+                                sd15_candidates = [m for m in models if any(x in m.lower() for x in ["realistic", "vision", "v60", "v1-5", "v1.5", "sd15", "sd1.5", "realisticvision"])]
                                 sdxl_candidates = [m for m in models if any(x in m.lower() for x in ["sdxl", "xl", "realarchviz", "realvis", "juggernaut", "arch"])]
                                 if current_model in models:
                                     pass
+                                elif sd15_candidates:
+                                    inputs['ckpt_name'] = sd15_candidates[0]
+                                    print(f"[{self.base_url}] Checkpoint '{current_model}' not found. Selecting SD1.5 candidate: '{sd15_candidates[0]}'.")
                                 elif sdxl_candidates:
                                     inputs['ckpt_name'] = sdxl_candidates[0]
                                     print(f"[{self.base_url}] Checkpoint '{current_model}' not found. Selecting SDXL candidate: '{sdxl_candidates[0]}'.")
@@ -535,6 +550,14 @@ class ComfyUIClient:
                         print("[ComfyUI Client] Upgraded VAEDecode -> VAETilingDecode (OOM protection for 4GB VRAM)")
         except Exception:
             pass  # VAETilingDecode not available, keep VAEDecode
+
+        # Detailed Logging
+        print(f"[Render Profile] Chosen render profile / geometry lock mode: {mode}")
+        print(f"[First Pass Settings] sampler_name=dpmpp_2m, scheduler=karras, steps={steps}, cfg={cfg_scale}, denoise={mapped_denoise}, depth_strength={final_depth_strength}, canny_strength={final_edge_strength}")
+        if is_upscale_pass:
+            print(f"[Second Pass/Upscale Settings] Enabled: True, upscale_factor={upscale_factor}, upscale_denoise={upscale_denoise or 0.18}, steps={steps}, cfg={cfg_scale}")
+        else:
+            print(f"[Second Pass/Upscale Settings] Enabled: False (upscale_factor is None or <= 1.0)")
 
         return workflow
 

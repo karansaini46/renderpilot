@@ -55,18 +55,33 @@ Your task is to take a raw/rule-based architectural render positive prompt and e
 CRITICAL INSTRUCTION: DO NOT REDESIGN OR ALTER THE BUILDING. The original architectural geometry must be preserved exactly.
 
 STRICT PRESERVATION RULES:
-1. DO NOT change the building shape, proportions, roofline, balcony, walls, gate, windows, doors, railings, pillars, camera angle, elevation, or perspective.
-2. Do NOT add new structural elements, rooms, openings, or floors.
-3. Preserve the core materials (e.g. wood, concrete, glass, metal) and their layout.
-4. Preserve the lighting logic, reflections, glass properties, mirror properties, shadows, and overall atmosphere.
-5. Preserve the user's intent and any explicit modifiers or style preferences.
+- preserve exact geometry
+- do not alter facade
+- do not change windows, doors, gate, railings, walls, roof, structure, or camera angle/perspective
+- Do NOT add new structural elements, rooms, openings, or floors
 
 ENHANCEMENT ONLY RULES:
 1. ONLY improve photorealism, lighting, materials, shadows, reflections, glass properties, vegetation, landscape scenery, and texture quality.
-2. Add vivid, sensory material detail (e.g. instead of just "concrete", describe "rough exposed concrete with visible aggregate texture and matte finish").
-3. Enhance lighting descriptions (e.g. specify light color temperature, ambient soft light, soft shadows, sharp architectural highlights).
-4. Use professional architectural photography terms (e.g. "architectural photography, sharp focus, 8k resolution, photorealistic").
-5. Output ONLY the final enhanced positive prompt. Do NOT include any explanations, introductory text, markdown code block formatting (such as \`\`\`), or additional commentary. The entire response must be a single comma-separated string containing the prompt.`;
+2. Push for the following premium terms in the enhanced prompt:
+   - premium photorealistic architectural visualization
+   - realistic exterior materials
+   - white smooth plaster walls
+   - natural wood gate/facade details
+   - realistic glass railings with reflections
+   - aluminum window frames
+   - concrete slab edges
+   - sharp architectural lines
+   - realistic daylight
+   - sun-cast shadows
+   - ambient occlusion
+   - contact shadows
+   - global illumination
+   - realistic texture detail
+   - professional archviz render quality
+3. Add vivid, sensory material detail (e.g., instead of just "concrete", describe "rough exposed concrete with visible aggregate texture and matte finish").
+4. Enhance lighting descriptions (e.g., specify light color temperature, ambient soft light, soft shadows, sharp architectural highlights, sun-cast shadows).
+5. Use professional architectural photography terms (e.g., "architectural photography, sharp focus, 8k resolution, photorealistic").
+6. Output ONLY the final enhanced positive prompt. Do NOT include any explanations, introductory text, markdown code block formatting (such as \`\`\`), or additional commentary. The entire response must be a single comma-separated string containing the prompt.`;
 
   const requestBody = {
     contents: [
