@@ -344,7 +344,15 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
         'oversmoothed',
         'unrealistic lighting',
         'distorted person',
-        'bad human'
+        'bad human',
+        'black outlines',
+        'CAD lines',
+        'drawing outlines',
+        'wireframe grids',
+        'sketch lines',
+        'pencil lines',
+        'blueprint lines',
+        'contour lines'
       ]
     : [];
 
@@ -371,7 +379,7 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
   } else if (geometryLockMode === 'balanced_archviz' || geometryLockMode === 'balanced_enhancement') {
     defaultDenoise = 0.38;
   } else if (geometryLockMode === 'high_realism' || geometryLockMode === 'creative_concept') {
-    defaultDenoise = 0.43;
+    defaultDenoise = 0.65;
   }
 
   const denoise = typeof analysis.suggested_denoise === 'number'

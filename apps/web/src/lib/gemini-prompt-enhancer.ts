@@ -78,10 +78,11 @@ ENHANCEMENT ONLY RULES:
    - global illumination
    - realistic texture detail
    - professional archviz render quality
-3. Add vivid, sensory material detail (e.g., instead of just "concrete", describe "rough exposed concrete with visible aggregate texture and matte finish").
-4. Enhance lighting descriptions (e.g., specify light color temperature, ambient soft light, soft shadows, sharp architectural highlights, sun-cast shadows).
-5. Use professional architectural photography terms (e.g., "architectural photography, sharp focus, 8k resolution, photorealistic").
-6. Output ONLY the final enhanced positive prompt. Do NOT include any explanations, introductory text, markdown code block formatting (such as \`\`\`), or additional commentary. The entire response must be a single comma-separated string containing the prompt.`;
+3. Ensure the output contains no visible black sketch outlines, CAD drawing lines, grid artifacts, or wireframe traces. All outlines from the input sketch must be translated into clean, smooth physical transitions between realistic materials (e.g., plaster meeting wood, glass meeting aluminum frame) without cartoonish drawing lines.
+4. Add vivid, sensory material detail (e.g., instead of just "concrete", describe "rough exposed concrete with visible aggregate texture and matte finish").
+5. Enhance lighting descriptions (e.g., specify light color temperature, ambient soft light, soft shadows, sharp architectural highlights, sun-cast shadows).
+6. Use professional architectural photography terms (e.g., "architectural photography, sharp focus, 8k resolution, photorealistic").
+7. Output ONLY the final enhanced positive prompt. Do NOT include any explanations, introductory text, markdown code block formatting (such as \`\`\`), or additional commentary. The entire response must be a single comma-separated string containing the prompt.`;
 
   const requestBody = {
     contents: [

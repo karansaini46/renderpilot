@@ -336,7 +336,7 @@ class ComfyUIClient:
             elif mode in ('balanced_archviz', 'balanced_enhancement', 'balanced'):
                 mapped_denoise = 0.38
             elif mode in ('high_realism', 'creative_concept', 'creative'):
-                mapped_denoise = 0.43
+                mapped_denoise = 0.65
             else:
                 mapped_denoise = 0.38
 

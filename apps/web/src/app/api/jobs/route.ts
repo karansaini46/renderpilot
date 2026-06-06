@@ -616,7 +616,7 @@ export async function POST(request: Request) {
       if (denoise === undefined || denoise === null) {
         denoise = 0.32;
       } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.45);
+        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.50);
       }
       if (userSettings.edge_control_strength === undefined) {
         edgeStrength = 0.95;
@@ -635,7 +635,7 @@ export async function POST(request: Request) {
       if (denoise === undefined || denoise === null) {
         denoise = 0.38;
       } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.50);
+        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.70);
       }
       if (userSettings.edge_control_strength === undefined) {
         edgeStrength = 0.90;
@@ -652,9 +652,9 @@ export async function POST(request: Request) {
       console.log('[Denoise Debug] mode:', renderMode, 'denoise:', denoise, 'source: mode_clamp')
     } else if (renderMode === 'high_realism') {
       if (denoise === undefined || denoise === null) {
-        denoise = 0.43;
+        denoise = 0.65;
       } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.55);
+        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.90);
       }
       if (userSettings.edge_control_strength === undefined) {
         edgeStrength = 0.85;
