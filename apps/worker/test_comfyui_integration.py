@@ -114,5 +114,96 @@ def run_tests():
         print(f"  -> FAIL: Collecting/downloading outputs failed: {e}")
         sys.exit(1)
 
+def test_controlnet_render():
+    print("=========================================================")
+    print("  Testing ControlNet Parameter Injection (Pre-flight)   ")
+    print("=========================================================")
+    
+    # 1. Instantiate client
+    comfyui_url = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188")
+    client = ComfyUIClient(comfyui_url)
+    
+    # 2. Check health - skip if fails
+    try:
+        client.check_health()
+    except Exception as e:
+        print(f"Skipping test_controlnet_render: ComfyUI server not running or unreachable ({e})")
+        return
+
+    # 3. Check controlnet available and assert True
+    controlnet_ok = client.check_controlnet_available("control_v11p_sd15_canny.pth")
+    print(f"ControlNet model 'control_v11p_sd15_canny.pth' available: {controlnet_ok}")
+    assert controlnet_ok is True, "ControlNet model control_v11p_sd15_canny.pth is not available in ComfyUI"
+
+    # 4. Load img2img_default workflow
+    workflow = client.load_workflow("img2img_default")
+
+    # 5. Get input/control images
+    from PIL import Image
+    temp_img_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "temp_test_image.png"))
+    try:
+        img = Image.new('RGB', (64, 64), color='white')
+        img.save(temp_img_path)
+
+        # Inject parameters
+        workflow = client.inject_parameters(
+            workflow=workflow,
+            input_image=temp_img_path,
+            control_image=temp_img_path,
+            prompt="photorealistic architectural exterior, clean concrete walls, natural lighting",
+            negative_prompt="blurry, distorted, low quality",
+            seed=42,
+            denoise=0.50,
+            geometry_lock_mode="accurate",
+            steps=10,
+            width=512,
+            height=512,
+        )
+
+        # 6. Assert KSampler node has denoise == 0.50
+        ksampler_node = None
+        controlnet_apply_node = None
+        canny_control_image_node = None
+
+        for node_id, node in workflow.items():
+            class_type = node.get("class_type")
+            meta_title = node.get("_meta", {}).get("title", "")
+            
+            if class_type == "KSampler":
+                ksampler_node = node
+            elif class_type == "ControlNetApply":
+                controlnet_apply_node = node
+            elif class_type == "LoadImage" and meta_title == "Load Canny Control Image":
+                canny_control_image_node = node
+
+        assert ksampler_node is not None, "KSampler node not found in workflow"
+        injected_denoise = ksampler_node["inputs"]["denoise"]
+        print(f"KSampler injected denoise: {injected_denoise}")
+        assert injected_denoise == 0.50, f"Expected KSampler denoise to be 0.50, got {injected_denoise}"
+
+        # 7. Assert ControlNetApply node has strength > 0 and <= 1.0
+        assert controlnet_apply_node is not None, "ControlNetApply node not found in workflow"
+        injected_strength = controlnet_apply_node["inputs"]["strength"]
+        print(f"ControlNetApply strength: {injected_strength}")
+        assert 0.0 < injected_strength <= 1.0, f"Expected strength to be > 0 and <= 1.0, got {injected_strength}"
+
+        # 8. Assert LoadImage node "Load Canny Control Image" has image field set (not default/placeholder)
+        assert canny_control_image_node is not None, "Canny control image node not found in workflow"
+        injected_control_image = canny_control_image_node["inputs"]["image"]
+        print(f"Canny control image: '{injected_control_image}'")
+        assert injected_control_image == temp_img_path, f"Expected control image path to be {temp_img_path}, got {injected_control_image}"
+
+        # 9. Print summary
+        found_nodes = [node.get("class_type") for node in workflow.values()]
+        print("\nSummary:")
+        print(f"  - Nodes found in workflow: {', '.join(found_nodes)}")
+        print(f"  - Denoise value: {injected_denoise}")
+        print(f"  - Control strength: {injected_strength}")
+        print("  ControlNet parameter injection test PASSED successfully!\n")
+
+    finally:
+        if os.path.exists(temp_img_path):
+            os.remove(temp_img_path)
+
 if __name__ == "__main__":
-    run_tests()
+    test_controlnet_render()

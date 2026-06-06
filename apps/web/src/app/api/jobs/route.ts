@@ -5,6 +5,67 @@ import { STYLE_PRESETS } from '../../../lib/style-presets';
 
 export const dynamic = 'force-dynamic';
 
+import { env } from '../../../config/env';
+import { analyzeProjectImage } from '../../../lib/prompt-brain/gemini-provider';
+import { composePrompt } from '../../../lib/prompt-brain/prompt-composer';
+import { processAutoMaterialMappings } from '../../../lib/prompt-brain/material-mapper';
+import { PromptBrainSchema, SCENE_TYPES } from '../../../lib/prompt-brain/types';
+import { enhancePromptWithGemini } from '../../../lib/gemini-prompt-enhancer';
+
+function createManualAnalysis(
+  sceneType: string,
+  projectType: string,
+  materials: string[],
+  materialMappings: any[]
+): PromptBrainSchema {
+  return {
+    scene_type: (SCENE_TYPES.includes(sceneType as any) ? sceneType : 'Exterior') as any,
+    confidence: 1.0,
+    camera_view: {
+      angle: 'standard',
+      elevation: 'eye-level',
+      description: 'Manual architectural perspective'
+    },
+    major_objects: [],
+    object_priority: [],
+    composition_lock: {
+      description: 'Manual lock',
+      lockAspects: ['overall layout'],
+      riskLevel: 'medium'
+    },
+    materials,
+    material_mappings: materialMappings.map(m => ({
+      objectName: m.objectName,
+      category: m.detectedClass,
+      suggestedMaterial: m.selectedMaterial,
+      confidence: 1.0
+    })),
+    texture_analysis: { description: '', dominantPatterns: [] },
+    surface_behavior: { glossiness: 'medium', roughness: 'medium', metallic: 'low', details: '' },
+    interior_light_analysis: { lightSources: [], dominantColorTemp: 'neutral', intensity: 'medium', description: '' },
+    exterior_light_analysis: { sunPosition: 'clear sky', timeOfDay: 'daylight', weatherCondition: 'clear', shadowSharpness: 'soft', description: '' },
+    mirror_analysis: { detected: false, count: 0, surfaceAreaEstimated: 'none', description: '' },
+    glass_analysis: { detected: false, transparencyLevel: 'medium', reflectionLevel: 'medium', description: '' },
+    reflection_guidance: { promptTriggers: [], renderSettingsAdjustment: '' },
+    room_type_protection: { roomType: 'unspecified', protectedElements: [], forbiddenSubstitutions: [] },
+    geometry_risks: [],
+    style_safety: { styleIncompatibilities: [], promptSafetyFlags: [] },
+    input_quality: { resolutionCheck: 'standard', compressionArtifacts: false, blurriness: 'none', score: 1.0 },
+    workflow_recommendation: { pipeline: 'standard', steps: [], reason: '' },
+    preserve_constraints: [],
+    forbidden_changes: [],
+    detail_enhancement_plan: { steps: [], targetAreas: [] },
+    suggested_render_mode: 'img2img',
+    suggested_denoise: 0.65,
+    suggested_geometry_lock: 'balanced',
+    positive_prompt_draft: '',
+    negative_prompt_draft: '',
+    risk_flags: [],
+    success_criteria: [],
+    user_summary: 'Manual mode prompt composition'
+  };
+}
+
 async function recoverStaleJobs() {
   try {
     const staleThreshold = new Date(Date.now() - 30 * 1000); // 30 seconds
@@ -130,7 +191,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const { projectId, settingsJson, forceRegenerate } = body;
+    const { projectId, settingsJson, forceRegenerate, forceGemini } = body;
 
     if (!projectId || projectId.trim() === '') {
       return NextResponse.json(
@@ -239,7 +300,15 @@ export async function POST(request: Request) {
     const materialChoices = userSettings.materialChoices || [];
 
     // Find style preset matching requestedStyleId
-    const stylePreset = STYLE_PRESETS.find(s => s.id === requestedStyleId || s.name === requestedStyleId) || STYLE_PRESETS[0];
+    let stylePreset = STYLE_PRESETS.find(s => s.id === requestedStyleId || s.name === requestedStyleId) || STYLE_PRESETS[0];
+
+    // Guard: Verify compatibility of resolved style preset with the active sceneType
+    if (stylePreset.allowedSceneTypes && !stylePreset.allowedSceneTypes.includes(sceneType)) {
+      const fallbackPreset = STYLE_PRESETS.find(s => !s.allowedSceneTypes || s.allowedSceneTypes.includes(sceneType));
+      if (fallbackPreset) {
+        stylePreset = fallbackPreset;
+      }
+    }
 
     // Compile Preset Defaults
     const presetDefaults = {
@@ -256,24 +325,35 @@ export async function POST(request: Request) {
     // Query preference memory for the best matching settings from past approvals
     let memoryApplied = false;
     let memorySource = '';
-    try {
-      const activeProjectMeta = {
-        projectType,
-        sceneType,
-        stylePreference: stylePreset.name
-      };
-      
-      const memorySettings = await findBestMemoryMatch(activeProjectMeta);
-      if (memorySettings) {
-        // Exclude internal _memory keys before merging
-        const { _memory_scope, _memory_score, _memory_source_render, ...restMemory } = memorySettings;
-        finalSettings = { ...finalSettings, ...restMemory };
-        memoryApplied = true;
-        memorySource = _memory_scope || '';
+    const isForceRegenerate = !!forceRegenerate || !!userSettings.forceRegenerate;
+    const isForceGemini = !!forceGemini || !!userSettings.forceGemini;
+
+    if (!isForceRegenerate) {
+      try {
+        const activeProjectMeta = {
+          projectType,
+          sceneType,
+          stylePreference: stylePreset.name
+        };
+        
+        const memorySettings = await findBestMemoryMatch(activeProjectMeta, forceRegenerate);
+        if (memorySettings) {
+          // Exclude internal _memory keys before merging
+          const { _memory_scope, _memory_score, _memory_source_render, ...restMemory } = memorySettings;
+          if (isForceGemini) {
+            // Bypasses memory for prompt generation specifically but still applies other memory settings like denoise and geometryLockMode
+            const { prompt, negativePrompt, ...nonPromptMemory } = restMemory;
+            finalSettings = { ...finalSettings, ...nonPromptMemory };
+          } else {
+            finalSettings = { ...finalSettings, ...restMemory };
+          }
+          memoryApplied = true;
+          memorySource = _memory_scope || '';
+        }
+      } catch (memoryErr: any) {
+        // Memory lookup is non-blocking — log but don't fail job creation
+        console.error('[Preference Memory Lookup Error]:', memoryErr.message);
       }
-    } catch (memoryErr: any) {
-      // Memory lookup is non-blocking — log but don't fail job creation
-      console.error('[Preference Memory Lookup Error]:', memoryErr.message);
     }
 
     // Retrieve locked material mappings from the database for this project
@@ -298,43 +378,277 @@ export async function POST(request: Request) {
     }
 
     // Merge UI material choices and database locked material choices
-    const combinedMaterials = Array.from(new Set([
+    let combinedMaterials = Array.from(new Set([
       ...materialChoices,
       ...dbLockedMaterials
     ]));
 
-    // Compile prompt using the prompt builder combining chosen components
-    const baseTemplate = finalSettings.prompt || stylePreset.promptTemplate;
-    const finalPrompt = buildFinalPrompt({
-      projectType,
-      sceneType,
-      stylePromptTemplate: baseTemplate,
-      materialChoices: combinedMaterials,
-      memoryPrompt: memoryApplied ? finalSettings.prompt : undefined,
-      promptModifier: userSettings.promptModifier
+    // --- PROMPT BRAIN INTEGRATION ---
+    const projectFile = project.projectFiles[0];
+    const pbProvider = env.PROMPT_BRAIN_PROVIDER || 'manual';
+    const pbModel = env.GEMINI_MODEL || 'gemini-2.5-flash';
+    
+    let analysisId = '';
+    let analysisResult: PromptBrainSchema | null = null;
+    let finalProvider = pbProvider;
+    
+    // Compute deterministic analysis cache key
+    const analysisCacheKey = projectFile 
+      ? createHash('md5').update(`${projectFile.id}_${pbProvider}_${pbModel}`).digest('hex')
+      : '';
+      
+    // Try to load cached analysis if caching is enabled
+    if (projectFile && env.PROMPT_BRAIN_CACHE_ENABLED && analysisCacheKey && !isForceRegenerate) {
+      try {
+        const cachedAnalysis = await prisma.promptBrainAnalysis.findFirst({
+          where: { cacheKey: analysisCacheKey }
+        });
+        if (cachedAnalysis) {
+          analysisResult = JSON.parse(cachedAnalysis.analysisJson) as PromptBrainSchema;
+          analysisId = cachedAnalysis.id;
+          finalProvider = cachedAnalysis.provider as any;
+        }
+      } catch (cacheErr: any) {
+        console.error('[PromptBrain Cache Read Error]:', cacheErr.message);
+      }
+    }
+    
+    // If not cached or caching is disabled, run analysis
+    if (!analysisResult && projectFile) {
+      if ((pbProvider === 'gemini' || isForceRegenerate) && env.GEMINI_API_KEY) {
+        try {
+          const geminiRes = await analyzeProjectImage(project.id, sceneType);
+          if (geminiRes.success && geminiRes.analysis && geminiRes.analysis.confidence >= (env.PROMPT_BRAIN_MIN_CONFIDENCE || 0.75)) {
+            analysisResult = geminiRes.analysis;
+            finalProvider = 'gemini';
+
+            // Run helper to process material mappings
+            try {
+              await processAutoMaterialMappings(project.id, analysisResult);
+            } catch (mapperErr: any) {
+              console.error('[PromptBrain Auto Material Mapper Error]:', mapperErr.message);
+            }
+          } else {
+            console.warn(`[PromptBrain Gemini Fallback]: Success=${geminiRes.success}, Confidence=${geminiRes.analysis?.confidence ?? 'N/A'}`);
+            finalProvider = 'manual';
+          }
+        } catch (geminiErr: any) {
+          console.error('[PromptBrain Gemini Request Error]:', geminiErr.message);
+          finalProvider = 'manual';
+        }
+      }
+      
+      // Fallback/Manual Mode: Construct manual analysis
+      if (!analysisResult) {
+        const dbMappings = await prisma.materialMapping.findMany({
+          where: { projectId: project.id }
+        });
+        analysisResult = createManualAnalysis(sceneType, projectType, combinedMaterials, dbMappings);
+        finalProvider = 'manual';
+      }
+      
+      // Save PromptBrainAnalysis row in database
+      try {
+        analysisId = `pba_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+        await prisma.promptBrainAnalysis.create({
+          data: {
+            id: analysisId,
+            projectId: project.id,
+            projectFileId: projectFile.id,
+            provider: finalProvider,
+            model: finalProvider === 'gemini' ? pbModel : 'manual',
+            sceneType: analysisResult.scene_type,
+            confidence: analysisResult.confidence,
+            analysisJson: JSON.stringify(analysisResult),
+            positivePrompt: analysisResult.positive_prompt_draft || '',
+            negativePrompt: analysisResult.negative_prompt_draft || '',
+            renderMode: analysisResult.suggested_render_mode || 'img2img',
+            denoise: analysisResult.suggested_denoise || 0.65,
+            geometryLockMode: analysisResult.suggested_geometry_lock || 'balanced',
+            cacheKey: analysisCacheKey,
+          }
+        });
+      } catch (dbSaveErr: any) {
+        console.error('[PromptBrain Save Error]:', dbSaveErr.message);
+      }
+    }
+
+    // Merge latest database material mappings to analysisResult and reload combinedMaterials
+    if (analysisResult) {
+      try {
+        const dbMappings = await prisma.materialMapping.findMany({
+          where: { projectId: project.id }
+        });
+
+        // Convert database records to PromptBrain suggestion format
+        const dbMappedSuggestions = dbMappings.map((m: any) => ({
+          objectName: m.objectName,
+          category: m.detectedClass as any,
+          suggestedMaterial: m.selectedMaterial,
+          confidence: m.locked ? 1.0 : m.confidence
+        }));
+
+        // Merge: start with DB mappings, then add suggestions from analysis for categories not present in DB
+        const mergedMappings = [...dbMappedSuggestions];
+        const dbCategories = new Set(dbMappedSuggestions.map(m => m.category.toLowerCase()));
+
+        if (analysisResult.material_mappings) {
+          for (const suggestion of analysisResult.material_mappings) {
+            if (!dbCategories.has(suggestion.category.toLowerCase())) {
+              mergedMappings.push(suggestion);
+            }
+          }
+        }
+
+        analysisResult.material_mappings = mergedMappings;
+
+        // Reload locked materials list for finalSettings.materialChoices
+        const reloadedLockedMaterials = dbMappings
+          .filter((m: any) => m.locked)
+          .map((m: any) => {
+            const finish = (m.selectedMaterial || '').trim();
+            const zone = (m.detectedClass || '').trim();
+            if (finish && zone) {
+              return `${finish} ${zone}`;
+            }
+            return finish || zone;
+          })
+          .filter(Boolean);
+
+        combinedMaterials = Array.from(new Set([
+          ...materialChoices,
+          ...reloadedLockedMaterials
+        ]));
+      } catch (mergeErr: any) {
+        console.error('[PromptBrain Database Material Merge Error]:', mergeErr.message);
+      }
+    }
+
+    // Compose Prompt using Safe prompt composer
+    const userPromptModifier = userSettings.promptModifier || '';
+    const memoryPromptValue = (memoryApplied && finalSettings.prompt && finalSettings.prompt !== stylePreset.promptTemplate)
+      ? finalSettings.prompt
+      : undefined;
+
+    const composerResult = composePrompt({
+      analysis: analysisResult!,
+      stylePreset,
+      renderMode: userSettings.geometryLockMode ? undefined : finalSettings.geometryLockMode as any,
+      promptModifier: userPromptModifier,
+      memoryPrompt: memoryPromptValue
     });
 
-    finalSettings.prompt = finalPrompt;
-    finalSettings.negativePrompt = userSettings.negativePrompt || finalSettings.negativePrompt || stylePreset.negativePrompt;
+    // Merge composed attributes back to settings
+    finalSettings.promptBrainProvider = finalProvider;
+    finalSettings.promptBrainAnalysisId = analysisId;
+    finalSettings.promptBrainAnalysis = analysisResult;
+    finalSettings.negativePrompt = composerResult.negativePrompt;
+    finalSettings.promptSafetyReport = composerResult.promptSafetyReport;
+
+    // Enhance prompt using Gemini
+    const finalPrompt = composerResult.positivePrompt;
+    let enhancedPrompt = finalPrompt;
+    const geminiEnhancerStatus = { status: 'skipped' as 'applied' | 'skipped' | 'failed', error: undefined as string | undefined };
+
+    try {
+      enhancedPrompt = await enhancePromptWithGemini(finalPrompt, geminiEnhancerStatus);
+    } catch (err: any) {
+      geminiEnhancerStatus.status = 'failed';
+      geminiEnhancerStatus.error = err.message;
+      console.error('[Jobs Route Gemini Enhancement Crash Shield]:', err.message);
+    }
+
+    finalSettings.prompt = enhancedPrompt;
     
-    // Explicit user selections
+    // Explicit user selections / fallbacks
     finalSettings.projectType = projectType;
     finalSettings.sceneType = sceneType;
     finalSettings.materialChoices = combinedMaterials;
+    finalSettings.renderMode = userSettings.job_type || userSettings.jobType || composerResult.renderMode;
+    // Resolve mode and parameters
+    const geometryLockMode = userSettings.geometryLockMode || finalSettings.geometryLockMode || composerResult.geometryLockMode || 'strict_structure';
+    let renderMode = geometryLockMode;
+    if (renderMode === 'strict' || renderMode === 'accurate' || renderMode === 'technical' || renderMode === 'strict_structure') {
+      renderMode = 'strict_structure';
+    } else if (renderMode === 'balanced' || renderMode === 'balanced_enhancement') {
+      renderMode = 'balanced_enhancement';
+    } else if (renderMode === 'creative' || renderMode === 'creative_concept') {
+      renderMode = 'creative_concept';
+    } else {
+      renderMode = 'strict_structure';
+    }
+
+    let denoise = userSettings.denoise !== undefined ? userSettings.denoise : composerResult.denoise;
+    let edgeStrength = 1.0;
+    let depthStrength = 1.0;
+
+    if (geometryLockMode === 'technical' || geometryLockMode === 'strict' || geometryLockMode === 'strict_structure') {
+      if (denoise === undefined || denoise === null) {
+        denoise = 0.35;
+      } else {
+        denoise = Math.min(Math.max(Number(denoise), 0.25), 0.45);
+      }
+      edgeStrength = 1.0;
+      depthStrength = 1.0;
+      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
+    } else if (geometryLockMode === 'accurate') {
+      if (denoise === undefined || denoise === null) {
+        denoise = 0.55;
+      } else {
+        denoise = Math.min(Math.max(Number(denoise), 0.50), 0.65);
+      }
+      edgeStrength = 1.0;
+      depthStrength = 1.0;
+      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
+    } else if (geometryLockMode === 'balanced' || geometryLockMode === 'balanced_enhancement') {
+      if (denoise === undefined || denoise === null) {
+        denoise = 0.65;
+      } else {
+        denoise = Math.min(Math.max(Number(denoise), 0.60), 0.75);
+      }
+      edgeStrength = 0.75;
+      depthStrength = 0.75;
+      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
+    } else if (geometryLockMode === 'creative' || geometryLockMode === 'creative_concept') {
+      if (denoise === undefined || denoise === null) {
+        denoise = 0.80;
+      } else {
+        denoise = Math.min(Math.max(Number(denoise), 0.72), 0.88);
+      }
+      edgeStrength = 0.40;
+      depthStrength = 0.40;
+      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
+    } else {
+      if (denoise === undefined || denoise === null) {
+        denoise = 0.35;
+      } else {
+        denoise = Math.min(Math.max(Number(denoise), 0.25), 0.45);
+      }
+      edgeStrength = 1.0;
+      depthStrength = 1.0;
+      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
+    }
+
+    finalSettings.render_mode = renderMode;
+    finalSettings.geometryLockMode = renderMode;
+    finalSettings.denoise = denoise;
+    console.log('[Denoise Final]', finalSettings.denoise, 'memoryApplied:', memoryApplied, 'forceRegenerate:', forceRegenerate)
+    finalSettings.denoise_strength = denoise;
+    finalSettings.edge_control_strength = edgeStrength;
+    finalSettings.depth_control_strength = depthStrength;
+    finalSettings.geometry_drift_score = null;
+    finalSettings.structure_check_status = null;
+    
+    // Meta mappings to setting JSON
+    finalSettings.materialMappings = analysisResult!.material_mappings;
+    finalSettings.textureAnalysis = analysisResult!.texture_analysis;
+    finalSettings.lightAnalysis = sceneType === 'Interior' ? analysisResult!.interior_light_analysis : analysisResult!.exterior_light_analysis;
+    finalSettings.reflectionGuidance = analysisResult!.reflection_guidance;
+    finalSettings.successCriteria = analysisResult!.success_criteria;
 
     // Apply any explicit technical overrides if present (just in case)
     if (userSettings.steps) finalSettings.steps = userSettings.steps;
     if (userSettings.cfg_scale) finalSettings.cfg_scale = userSettings.cfg_scale;
-    if (userSettings.denoise !== undefined) finalSettings.denoise = userSettings.denoise;
-    
-    // Validate and set geometryLockMode, defaulting to 'accurate'
-    let geometryLockMode = userSettings.geometryLockMode || finalSettings.geometryLockMode || 'accurate';
-    const validModes = ['creative', 'balanced', 'accurate', 'technical'];
-    if (!validModes.includes(geometryLockMode.toLowerCase())) {
-      geometryLockMode = 'accurate';
-    }
-    finalSettings.geometryLockMode = geometryLockMode.toLowerCase();
-
     if (userSettings.seed) finalSettings.seed = userSettings.seed;
 
     // Compute deterministic cache key from render-critical parameters
@@ -403,6 +717,26 @@ export async function POST(request: Request) {
         }
       });
 
+      // Log Gemini prompt enhancement status
+      await tx.jobEvent.create({
+        data: {
+          id: `event_${Date.now()}_${Math.floor(Math.random() * 1000 + 5)}`,
+          jobId: jobId,
+          eventType: `gemini_enhancement_${geminiEnhancerStatus.status}`,
+          message: geminiEnhancerStatus.status === 'applied'
+            ? 'Gemini prompt enhancement applied successfully.'
+            : geminiEnhancerStatus.status === 'failed'
+            ? `Gemini prompt enhancement failed: ${geminiEnhancerStatus.error || 'Unknown error'}. Fell back to original prompt.`
+            : 'Gemini prompt enhancement skipped.',
+          detailsJson: JSON.stringify({
+            status: geminiEnhancerStatus.status,
+            error: geminiEnhancerStatus.error || null,
+            originalPrompt: finalPrompt,
+            enhancedPrompt: enhancedPrompt
+          })
+        }
+      });
+
       // If memory settings were applied, log an additional event for traceability
       if (memoryApplied) {
         await tx.jobEvent.create({
@@ -439,7 +773,8 @@ export async function POST(request: Request) {
  * Returns the highest-scored match, or null if no memory exists.
  */
 async function findBestMemoryMatch(
-  project: { projectType: string | null; sceneType: string | null; stylePreference: string | null }
+  project: { projectType: string | null; sceneType: string | null; stylePreference: string | null },
+  forceRegenerate?: boolean
 ): Promise<Record<string, any> | null> {
   const projectType = (project.projectType || 'general').toLowerCase().trim();
   const sceneType = (project.sceneType || 'general').toLowerCase().trim();
@@ -455,7 +790,7 @@ async function findBestMemoryMatch(
   ];
 
   for (const scopePrefix of scopeCandidates) {
-    const match = await prisma.preferenceMemory.findFirst({
+    const matches = await prisma.preferenceMemory.findMany({
       where: {
         key: memoryKey,
         scope: { startsWith: scopePrefix },
@@ -463,7 +798,16 @@ async function findBestMemoryMatch(
       orderBy: { score: 'desc' },
     });
 
-    if (match) {
+    for (const match of matches) {
+      const scopeLower = match.scope.toLowerCase();
+      // Guard against cross-scene contamination (e.g. interior matching an exterior memory, or vice versa)
+      if (sceneType === 'interior' && scopeLower.includes(':exterior')) {
+        continue;
+      }
+      if (sceneType === 'exterior' && scopeLower.includes(':interior')) {
+        continue;
+      }
+
       let memoryValue: Record<string, any> = {};
       try {
         memoryValue = JSON.parse(match.valueJson || '{}');
@@ -478,7 +822,7 @@ async function findBestMemoryMatch(
       if (memoryValue.negative_prompt) renderSettings.negativePrompt = memoryValue.negative_prompt;
       if (memoryValue.steps) renderSettings.steps = memoryValue.steps;
       if (memoryValue.cfg_scale) renderSettings.cfg_scale = memoryValue.cfg_scale;
-      if (memoryValue.denoise !== undefined) renderSettings.denoise = memoryValue.denoise;
+      if (memoryValue.denoise !== undefined && !forceRegenerate) renderSettings.denoise = memoryValue.denoise;
       if (memoryValue.seed) renderSettings.seed = memoryValue.seed;
       if (memoryValue.style_id) renderSettings.stylePreference = memoryValue.style_id;
       if (memoryValue.geometry_lock_mode) renderSettings.geometryLockMode = memoryValue.geometry_lock_mode;

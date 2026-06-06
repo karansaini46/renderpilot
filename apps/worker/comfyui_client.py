@@ -92,7 +92,6 @@ class ComfyUIClient:
             queue_resp.raise_for_status()
 
             return stats
-
         except requests.exceptions.ConnectionError:
             raise ComfyUIConnectionError(
                 f"[ComfyUI Offline] Cannot connect to ComfyUI at {self.base_url}. "
@@ -113,6 +112,21 @@ class ComfyUIClient:
             raise ComfyUIConnectionError(
                 f"[ComfyUI Error] Unexpected error checking ComfyUI health: {e}"
             )
+
+    def check_controlnet_available(self, model_name: str) -> bool:
+        """
+        Queries ComfyUI to check if a specific ControlNet model is available.
+        """
+        try:
+            resp = requests.get(f"{self.base_url}/object_info/ControlNetLoader", timeout=5)
+            if resp.ok:
+                data = resp.json()
+                models = data.get("ControlNetLoader", {}).get("input", {}).get("required", {}).get("control_net_name", [])[0]
+                if models and model_name in models:
+                    return True
+            return False
+        except Exception:
+            return False
 
     def is_healthy(self) -> bool:
         """Returns True if ComfyUI is reachable and responsive, False otherwise."""
@@ -178,13 +192,17 @@ class ComfyUIClient:
         negative_prompt: str = '',
         seed: int = 42,
         output_folder: str = '',
-        width: int = 768,
-        height: int = 768,
+        width: int = 512,
+        height: int = 512,
         steps: int = 20,
-        cfg_scale: float = 7.0,
-        denoise: float = 1.0,
+        cfg_scale: float = 8.0,
+        denoise: float | None = None,
         geometry_lock_mode: str = 'accurate',
-        control_image: str | None = None,
+        control_image: str | None = "NOT_PROVIDED",
+        depth_control_image: str | None = "NOT_PROVIDED",
+        prompt_brain_provider: str = 'unknown',
+        edge_control_strength: float | None = None,
+        depth_control_strength: float | None = None,
     ) -> dict:
         """
         Injects render parameters into a workflow template by scanning
@@ -211,29 +229,125 @@ class ComfyUIClient:
             The modified workflow dict.
         """
         # Map geometry lock mode to ComfyUI variables
+        # Dual ControlNet strength profiles: (depth_strength, canny_strength)
         mode = (geometry_lock_mode or 'accurate').lower()
-        mapped_denoise = denoise
-        control_strength = 0.9
-        prompt_constraint = ""
 
-        if mode == 'creative':
-            mapped_denoise = 0.85
-            control_strength = 0.4
+        control_strength_map = {
+            'creative': 0.40,
+            'balanced': 0.60,
+            'accurate': 0.75,
+            'technical': 0.92,
+            # Legacy fallbacks:
+            'creative_concept': 0.35,
+            'balanced_enhancement': 0.55,
+            'strict_structure': 0.90,
+            'faithful': 0.90
+        }
+
+        canny_strength_map = {
+            'creative': 0.20,
+            'balanced': 0.35,
+            'accurate': 0.45,
+            'technical': 0.60,
+            # Legacy fallbacks:
+            'creative_concept': 0.25,
+            'balanced_enhancement': 0.38,
+            'strict_structure': 0.60,
+            'faithful': 0.60
+        }
+
+        mode_depth_strength = control_strength_map.get(mode, 0.75)
+        mode_canny_strength = canny_strength_map.get(mode, 0.45)
+        
+        generic_strength_map = {
+            'creative': 0.40,
+            'creative_concept': 0.40,
+            'balanced': 0.70,
+            'balanced_enhancement': 0.75,
+            'accurate': 0.90,
+            'technical': 1.0,
+            'strict_structure': 1.0,
+            'faithful': 1.0
+        }
+        control_strength = generic_strength_map.get(mode, 0.90)
+
+        prompt_constraint = ""
+        if mode == 'strict_structure':
+            prompt_constraint = "photorealistic architectural render optimization, realistic materials, natural lighting, accurate shadows, glass reflections, realistic texture detail, professional archviz polish, same building geometry, same camera composition"
+        elif mode == 'balanced_enhancement':
+            prompt_constraint = "preserves composition, balanced style changes"
+        elif mode == 'creative_concept':
+            prompt_constraint = "more visual freedom, creative details, concept rendering"
+        elif mode == 'creative':
             prompt_constraint = "more visual freedom, creative details"
         elif mode == 'balanced':
-            mapped_denoise = 0.65
-            control_strength = 0.7
             prompt_constraint = "preserves composition, balanced style changes"
         elif mode == 'accurate':
-            mapped_denoise = 0.50
-            control_strength = 0.9
             prompt_constraint = "strict composition preservation, realistic structure, client-ready layout"
-        elif mode == 'technical':
-            mapped_denoise = 0.30
-            control_strength = 1.0
+        elif mode in ('technical', 'faithful'):
             prompt_constraint = "strongest preservation of contours, exact geometry, technical blueprint match"
+        else:
+            prompt_constraint = "photorealistic architectural render optimization, realistic materials, natural lighting, accurate shadows, glass reflections, realistic texture detail, professional archviz polish, same building geometry, same camera composition"
 
-        for node_id, node in workflow.items():
+        # Resolve edge and depth control strengths from per-mode defaults
+        final_edge_strength = edge_control_strength if edge_control_strength is not None else mode_canny_strength
+        final_depth_strength = depth_control_strength if depth_control_strength is not None else mode_depth_strength
+
+        mapped_denoise = denoise
+        if mapped_denoise is None:
+            if mode in ("creative_concept", "creative"):
+                mapped_denoise = 0.65
+            elif mode in ("balanced_enhancement", "balanced"):
+                mapped_denoise = 0.40
+            else:
+                mapped_denoise = 0.25
+
+        # Log final parameters
+        print(f"[ComfyUI Client] Final parameters: denoise={mapped_denoise}, geometryLockMode={mode}, control_strength={control_strength}, edge_strength={final_edge_strength}, depth_strength={final_depth_strength}, promptBrainProvider={prompt_brain_provider}")
+
+        # Resolve inputs
+        resolved_control_image = input_image if control_image == "NOT_PROVIDED" else control_image
+        resolved_depth_control_image = input_image if depth_control_image == "NOT_PROVIDED" else depth_control_image
+
+        # Check ControlNet model availability (both depth and canny) and presence of images
+        canny_ok = self.check_controlnet_available("control_v11p_sd15_canny.pth")
+        depth_ok = self.check_controlnet_available("control_v11f1p_sd15_depth.pth")
+
+        has_depth = depth_ok and (resolved_depth_control_image is not None)
+        has_canny = canny_ok and (resolved_control_image is not None)
+
+        if not has_depth or not has_canny:
+            if not has_depth and not has_canny:
+                print("[ControlNet] WARNING: Both ControlNet models are missing/disabled. Skipping ControlNet entirely.", file=sys.stderr)
+                for nid in ["10", "11", "12", "13", "14", "15"]:
+                    if nid in workflow:
+                        del workflow[nid]
+                for node in workflow.values():
+                    if node.get("class_type") in ("KSampler", "KSamplerAdvanced"):
+                        inputs = node.get("inputs", {})
+                        if 'positive' in inputs:
+                            inputs['positive'] = ["6", 0]
+                        if 'negative' in inputs:
+                            inputs['negative'] = ["7", 0]
+            elif not has_depth:
+                print("[ControlNet] WARNING: Depth ControlNet is missing/disabled. Skipping depth map control.", file=sys.stderr)
+                for nid in ["10", "11", "12"]:
+                    if nid in workflow:
+                        del workflow[nid]
+                if "15" in workflow:
+                    workflow["15"]["inputs"]["conditioning"] = ["6", 0]
+            elif not has_canny:
+                print("[ControlNet] WARNING: Canny ControlNet is missing/disabled. Skipping canny edge control.", file=sys.stderr)
+                for nid in ["13", "14", "15"]:
+                    if nid in workflow:
+                        del workflow[nid]
+                for node in workflow.values():
+                    if node.get("class_type") in ("KSampler", "KSamplerAdvanced"):
+                        inputs = node.get("inputs", {})
+                        if 'positive' in inputs:
+                            inputs['positive'] = ["12", 0]
+
+        for node_id, node in list(workflow.items()):
             class_type = node.get('class_type', '')
             inputs = node.get('inputs', {})
 
@@ -243,15 +357,28 @@ class ComfyUIClient:
                     inputs['seed'] = seed
                 if 'steps' in inputs:
                     inputs['steps'] = steps
-                if 'cfg' in inputs:
-                    inputs['cfg'] = cfg_scale
+                inputs['cfg'] = cfg_scale if cfg_scale is not None else 8.0
+                inputs['sampler_name'] = "dpmpp_2m"
+                inputs['scheduler'] = "karras"
                 if 'denoise' in inputs:
                     inputs['denoise'] = mapped_denoise
 
             # ControlNet apply nodes — inject control strength
             if class_type in ('ControlNetApply', 'ControlNetApplyAdvanced'):
                 if 'strength' in inputs:
-                    inputs['strength'] = control_strength
+                    meta_title = node.get('_meta', {}).get('title', '').lower()
+                    if 'canny' in meta_title or 'edge' in meta_title:
+                        inputs['strength'] = final_edge_strength
+                    elif 'depth' in meta_title:
+                        inputs['strength'] = final_depth_strength
+                    else:
+                        inputs['strength'] = control_strength
+
+            # ControlNetLoader node — preserve existing model name (depth vs canny)
+            # Each loader already has the correct model name from the workflow template;
+            # do not overwrite since we now have two distinct ControlNet models.
+            if class_type == 'ControlNetLoader':
+                pass  # Model names are set in the workflow JSON template
 
             # CLIP Text Encode nodes — inject prompts with constraints
             # Convention: node title or _meta.title containing "negative" gets negative prompt
@@ -274,14 +401,15 @@ class ComfyUIClient:
                 if 'height' in inputs:
                     inputs['height'] = height
 
-            # Load Image node — inject input image path
+            # Load Image node — inject input image path, canny control, and depth control
             if class_type == 'LoadImage':
                 meta_title = node.get('_meta', {}).get('title', '').lower()
-                if 'control' in meta_title or 'canny' in meta_title or 'edge' in meta_title:
-                    if control_image and 'image' in inputs:
-                        inputs['image'] = control_image
-                else:
-                    if input_image and 'image' in inputs:
+                if 'image' in inputs:
+                    if 'depth' in meta_title:
+                        inputs['image'] = resolved_depth_control_image or input_image
+                    elif 'control' in meta_title or 'canny' in meta_title or 'edge' in meta_title:
+                        inputs['image'] = resolved_control_image or input_image
+                    else:
                         inputs['image'] = input_image
 
             # CheckpointLoaderSimple — select model name
@@ -304,6 +432,18 @@ class ComfyUIClient:
             if class_type in ('SaveImage', 'PreviewImage'):
                 if 'filename_prefix' in inputs and output_folder:
                     inputs['filename_prefix'] = output_folder
+
+        # Attempt to upgrade VAEDecode → VAETilingDecode for OOM protection on 4GB VRAM
+        try:
+            resp = requests.get(f"{self.base_url}/object_info/VAETilingDecode", timeout=3)
+            if resp.ok and 'VAETilingDecode' in resp.json():
+                for node_id, node in workflow.items():
+                    if node.get('class_type') == 'VAEDecode':
+                        node['class_type'] = 'VAETilingDecode'
+                        node.setdefault('_meta', {})['title'] = 'VAE Tiling Decode'
+                        print("[ComfyUI Client] Upgraded VAEDecode -> VAETilingDecode (OOM protection for 4GB VRAM)")
+        except Exception:
+            pass  # VAETilingDecode not available, keep VAEDecode
 
         return workflow
 
@@ -461,7 +601,14 @@ class ComfyUIClient:
 
                     # Execution complete
                     if msg_type == 'executed' and data.get('prompt_id') == prompt_id:
-                        return self._fetch_history(prompt_id)
+                        # History may not be immediately available — retry briefly
+                        for _retry in range(5):
+                            result = self._fetch_history(prompt_id)
+                            if result is not None:
+                                return result
+                            time.sleep(0.5)
+                        # Fall through to polling if history still not ready
+                        return self._wait_via_polling(prompt_id)
 
                     # Execution error
                     if msg_type == 'execution_error' and data.get('prompt_id') == prompt_id:
@@ -473,7 +620,8 @@ class ComfyUIClient:
 
                     # Queue status — check if our prompt was removed (completed/errored)
                     if msg_type == 'status':
-                        queue = data.get('status', {}).get('exec_info', {})
+                        status_data = data.get('status') or {}
+                        queue = status_data.get('exec_info') or {}
                         pending = queue.get('queue_remaining', -1)
                         if pending == 0:
                             # Queue is empty, check history to see if our job finished
@@ -545,7 +693,9 @@ class ComfyUIClient:
         Returns:
             List of absolute file paths to generated images.
         """
-        outputs = history.get('outputs', {})
+        if not history:
+            return []
+        outputs = history.get('outputs', {}) or {}
         image_paths: list[str] = []
 
         for node_id, node_output in outputs.items():
@@ -614,15 +764,19 @@ class ComfyUIClient:
         negative_prompt: str = '',
         seed: int = 42,
         output_folder: str = 'RenderPilot',
-        width: int = 768,
-        height: int = 768,
+        width: int = 512,
+        height: int = 512,
         steps: int = 20,
-        cfg_scale: float = 7.0,
-        denoise: float = 1.0,
+        cfg_scale: float = 8.0,
+        denoise: float = 0.50,
         geometry_lock_mode: str = 'accurate',
         control_image: str | None = None,
+        depth_control_image: str | None = None,
         comfyui_output_dir: str | None = None,
         on_progress=None,
+        prompt_brain_provider: str = 'unknown',
+        edge_control_strength: float | None = None,
+        depth_control_strength: float | None = None,
     ) -> list[str]:
         """
         End-to-end render pipeline: load template, inject params, submit,
@@ -671,6 +825,10 @@ class ComfyUIClient:
             denoise=denoise,
             geometry_lock_mode=geometry_lock_mode,
             control_image=control_image,
+            depth_control_image=depth_control_image,
+            prompt_brain_provider=prompt_brain_provider,
+            edge_control_strength=edge_control_strength,
+            depth_control_strength=depth_control_strength,
         )
 
         # Step 3: Submit workflow

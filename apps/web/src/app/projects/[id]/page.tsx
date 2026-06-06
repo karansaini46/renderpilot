@@ -27,7 +27,8 @@ import {
   Edit3,
   Share2,
   Copy,
-  ExternalLink
+  ExternalLink,
+  RefreshCw
 } from 'lucide-react';
 import { STYLE_PRESETS } from '../../../lib/style-presets';
 
@@ -52,6 +53,7 @@ interface Render {
   baseDownloadUrl?: string;
   feedbackDetails?: Record<string, any>;
   feedbackNotes?: string;
+  settingsJson?: string | null;
 }
 
 interface RenderJob {
@@ -134,7 +136,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
   const [selectedSceneType, setSelectedSceneType] = useState('Exterior');
   const [selectedProjectType, setSelectedProjectType] = useState('Residential');
   const [selectedMaterials, setSelectedMaterials] = useState<string[]>([]);
-  const [selectedGeometryLockMode, setSelectedGeometryLockMode] = useState('accurate');
+  const [selectedGeometryLockMode, setSelectedGeometryLockMode] = useState('strict_structure');
   const [forceRegenerate, setForceRegenerate] = useState(false);
   const [promptModifier, setPromptModifier] = useState('');
 
@@ -497,12 +499,105 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
       s => s.id === project.stylePreference || s.name.toLowerCase() === (project.stylePreference || '').toLowerCase()
     );
     
-    setSelectedStylePreset(matchingPreset?.id || 'style_mod_lux_ext');
-    setSelectedSceneType(project.sceneType || 'Exterior');
+    const activeSceneType = project.sceneType || 'Exterior';
+    let stylePresetId = matchingPreset?.id || 'style_mod_lux_ext';
+    let geometryMode = matchingPreset?.defaultGeometryLockMode || 'strict_structure';
+
+    if (geometryMode === 'accurate' || geometryMode === 'technical' || geometryMode === 'strict_structure') {
+      geometryMode = 'strict_structure';
+    } else if (geometryMode === 'balanced' || geometryMode === 'balanced_enhancement') {
+      geometryMode = 'balanced_enhancement';
+    } else if (geometryMode === 'creative' || geometryMode === 'creative_concept') {
+      geometryMode = 'creative_concept';
+    } else {
+      geometryMode = 'strict_structure';
+    }
+
+    // Verify compatibility of current preset with the active sceneType
+    const stylePreset = STYLE_PRESETS.find(s => s.id === stylePresetId);
+    if (stylePreset && stylePreset.allowedSceneTypes && !stylePreset.allowedSceneTypes.includes(activeSceneType)) {
+      const fallbackPreset = STYLE_PRESETS.find(s => !s.allowedSceneTypes || s.allowedSceneTypes.includes(activeSceneType));
+      if (fallbackPreset) {
+        stylePresetId = fallbackPreset.id;
+        const fbLockMode = fallbackPreset.defaultGeometryLockMode || 'strict_structure';
+        if (fbLockMode === 'accurate' || fbLockMode === 'technical' || fbLockMode === 'strict_structure') {
+          geometryMode = 'strict_structure';
+        } else if (fbLockMode === 'balanced' || fbLockMode === 'balanced_enhancement') {
+          geometryMode = 'balanced_enhancement';
+        } else if (fbLockMode === 'creative' || fbLockMode === 'creative_concept') {
+          geometryMode = 'creative_concept';
+        }
+      }
+    }
+
+    setSelectedStylePreset(stylePresetId);
+    setSelectedSceneType(activeSceneType);
     setSelectedProjectType(project.projectType || 'Residential');
     setSelectedMaterials([]);
-    setSelectedGeometryLockMode(matchingPreset?.defaultGeometryLockMode || 'accurate');
+    setSelectedGeometryLockMode(geometryMode);
     setIsLaunchModalOpen(true);
+  };
+
+  const handleRegenerateWithStrongerLock = async (render: Render) => {
+    if (!project) return;
+    
+    setIsLaunchingJob(true);
+    try {
+      let prevDenoise = 0.25;
+      let prevStyleId = project.stylePreference || 'style_mod_lux_ext';
+      let prevPromptModifier = '';
+      
+      try {
+        if (render.settingsJson) {
+          const settings = JSON.parse(render.settingsJson);
+          if (typeof settings.denoise === 'number') {
+            prevDenoise = settings.denoise;
+          }
+          if (settings.styleId) {
+            prevStyleId = settings.styleId;
+          }
+          if (settings.promptModifier) {
+            prevPromptModifier = settings.promptModifier;
+          }
+        }
+      } catch (e) {
+        console.error(e);
+      }
+
+      // Stronger structure lock: lower denoise by 0.05, clamp to [0.15, 0.35]
+      const newDenoise = Math.min(Math.max(prevDenoise - 0.05, 0.15), 0.35);
+
+      const res = await fetch('/api/jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId: id,
+          forceRegenerate: true,
+          settingsJson: JSON.stringify({
+            styleId: prevStyleId,
+            sceneType: project.sceneType || 'Exterior',
+            projectType: project.projectType || 'Residential',
+            materialChoices: [],
+            geometryLockMode: 'strict_structure',
+            denoise: newDenoise,
+            promptModifier: prevPromptModifier || undefined
+          })
+        })
+      });
+
+      const responseData = await res.json();
+      if (!res.ok) {
+        throw new Error(responseData.error || 'Failed to queue stronger lock job');
+      }
+
+      alert(`Job queued with stronger structure lock! New target denoise: ${newDenoise.toFixed(2)}`);
+      await fetchProjectData();
+    } catch (err: any) {
+      console.error('[Regenerate Stronger Lock Error]:', err.message);
+      alert(err.message || 'An error occurred while queueing the job.');
+    } finally {
+      setIsLaunchingJob(false);
+    }
   };
 
   const handleLaunchRenderConfirm = async () => {
@@ -1042,6 +1137,76 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                               <span>{new Date(render.createdAt).toLocaleTimeString()}</span>
                             </div>
                             <p className="text-xs text-slate-500 mt-1">Style: {render.style}</p>
+
+                            {(() => {
+                              let renderMode = 'Strict';
+                              let accuracyScore: number | null = null;
+                              let structureCheckStatus: string | null = null;
+                              let warning = false;
+                              
+                              try {
+                                if (render.settingsJson) {
+                                  const settings = JSON.parse(render.settingsJson);
+                                  const mode = settings.render_mode || settings.geometryLockMode || '';
+                                  if (mode === 'strict_structure' || mode === 'accurate' || mode === 'technical') {
+                                    renderMode = 'Strict';
+                                  } else if (mode === 'balanced_enhancement' || mode === 'balanced') {
+                                    renderMode = 'Balanced';
+                                  } else if (mode === 'creative_concept' || mode === 'creative') {
+                                    renderMode = 'Creative';
+                                  }
+                                  if (typeof settings.geometry_drift_score === 'number') {
+                                    accuracyScore = settings.geometry_drift_score;
+                                  }
+                                  structureCheckStatus = settings.structure_check_status;
+                                }
+                              } catch (e) {
+                                console.error(e);
+                              }
+                              
+                              if (renderMode === 'Strict' && accuracyScore !== null) {
+                                const threshold = 0.88;
+                                if (accuracyScore < threshold || structureCheckStatus === 'failed_structure_check') {
+                                  warning = true;
+                                }
+                              }
+
+                              return (
+                                <div className="mt-3.5 space-y-2 border-t border-slate-900 pt-3 text-[11px]">
+                                  <div className="flex justify-between items-center text-slate-400">
+                                    <span>Geometry Lock:</span>
+                                    <span className="font-semibold text-slate-200">{renderMode}</span>
+                                  </div>
+                                  {accuracyScore !== null && (
+                                    <div className="flex justify-between items-center text-slate-400">
+                                      <span>Structure Accuracy:</span>
+                                      <span className={`font-bold ${warning ? 'text-amber-500' : 'text-emerald-400'}`}>
+                                        {(accuracyScore * 100).toFixed(1)}%
+                                      </span>
+                                    </div>
+                                  )}
+                                  {renderMode === 'Creative' && (
+                                    <div className="bg-blue-950/20 border border-blue-900/40 rounded py-1.5 px-2.5 text-[9px] text-blue-400 font-bold text-center uppercase tracking-wide">
+                                      Concept Render (Not Accurate)
+                                    </div>
+                                  )}
+                                  {warning && (
+                                    <div className="bg-amber-950/20 border border-amber-900/40 rounded p-2.5 text-[10px] text-amber-400 leading-relaxed">
+                                      Warning: The architecture modified too much from the original structure.
+                                    </div>
+                                  )}
+                                  {warning && (
+                                    <button
+                                      onClick={() => handleRegenerateWithStrongerLock(render)}
+                                      className="w-full mt-2 py-2 px-3 rounded bg-amber-600/10 hover:bg-amber-600/20 border border-amber-500/20 hover:border-amber-500/30 text-[10px] font-bold text-amber-400 transition-colors uppercase tracking-wider flex items-center justify-center gap-1.5"
+                                    >
+                                      <RefreshCw className="h-3.5 w-3.5" />
+                                      <span>Regenerate with stronger lock</span>
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </div>
 
                           {(() => {
@@ -1287,7 +1452,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                              <div className="bg-slate-900/40 border border-slate-900/60 rounded-lg p-2.5">
                                <span className="block text-[8px] text-slate-550 font-bold uppercase tracking-wider mb-0.5">Finish / Details</span>
                                <span className="text-xs font-medium text-slate-300 italic">&ldquo;{mapping.selectedMaterial}&rdquo;</span>
-                               {mapping.correctionSource === 'heuristic' && (
+                               {(mapping.correctionSource === 'heuristic' || mapping.correctionSource === 'gemini') && (
                                  <div className="mt-2 pt-2 border-t border-slate-900/40 flex flex-col gap-1">
                                    <div className="flex items-center space-x-1.5">
                                      <span className="px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[8px] font-bold rounded uppercase tracking-wider">
@@ -1997,7 +2162,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                   1. Select Visual Preset Style
                 </label>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {STYLE_PRESETS.map((style) => {
+                  {STYLE_PRESETS.filter(style => !style.allowedSceneTypes || style.allowedSceneTypes.includes(selectedSceneType)).map((style) => {
                     const isSelected = selectedStylePreset === style.id;
                     return (
                       <div
@@ -2052,7 +2217,20 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                   </label>
                   <select
                     value={selectedSceneType}
-                    onChange={(e) => setSelectedSceneType(e.target.value)}
+                    onChange={(e) => {
+                      const newSceneType = e.target.value;
+                      setSelectedSceneType(newSceneType);
+                      
+                      // Auto-fallback if currently selected style preset is not compatible with new sceneType
+                      const currentPreset = STYLE_PRESETS.find(s => s.id === selectedStylePreset);
+                      if (currentPreset && currentPreset.allowedSceneTypes && !currentPreset.allowedSceneTypes.includes(newSceneType)) {
+                        const fallbackPreset = STYLE_PRESETS.find(s => !s.allowedSceneTypes || s.allowedSceneTypes.includes(newSceneType));
+                        if (fallbackPreset) {
+                          setSelectedStylePreset(fallbackPreset.id);
+                          setSelectedGeometryLockMode(fallbackPreset.defaultGeometryLockMode);
+                        }
+                      }
+                    }}
                     className="w-full bg-slate-950 border border-slate-850 text-xs text-slate-205 p-2.5 rounded-lg focus:outline-none focus:border-indigo-500"
                   >
                     <option value="Exterior">Exterior Perspective</option>
@@ -2085,28 +2263,22 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                   {[
                     {
-                      id: 'creative',
-                      name: 'Creative',
-                      desc: 'More visual freedom, lower composition constraint. Best for early concept iteration.',
-                      badge: 'High Freedom'
+                      id: 'strict_structure',
+                      name: 'Strict Lock (Recommended)',
+                      desc: 'Preserves building structure, camera angle, and elements strictly. Focuses on photorealistic materials and lighting without altering layout.',
+                      badge: 'Strict Lock'
                     },
                     {
-                      id: 'balanced',
-                      name: 'Balanced',
-                      desc: 'Preserves composition outline while allowing some style/material modifications.',
-                      badge: 'Medium Lock'
+                      id: 'balanced_enhancement',
+                      name: 'Balanced Enhancement',
+                      desc: 'Balances structural preservation with creative material and layout updates.',
+                      badge: 'Balanced Lock'
                     },
                     {
-                      id: 'accurate',
-                      name: 'Accurate (Recommended)',
-                      desc: 'Preserves spatial composition tightly. Ideal default for standard client renders.',
-                      badge: 'Strong Lock'
-                    },
-                    {
-                      id: 'technical',
-                      name: 'Technical',
-                      desc: 'Highest contour alignment, lowest detail variance. Best for blueprints/precise mockups.',
-                      badge: 'Max Lock'
+                      id: 'creative_concept',
+                      name: 'Creative Concept',
+                      desc: 'Provides high creative freedom for design variations and early concepts. Output is labeled as a concept.',
+                      badge: 'Creative Lock'
                     }
                   ].map((mode) => {
                     const isSelected = selectedGeometryLockMode === mode.id;
