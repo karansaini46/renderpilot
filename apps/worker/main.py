@@ -71,7 +71,8 @@ class LocalResourceLock:
                 "activeJobId": None,
                 "activeStage": None,
                 "startedAt": None,
-                "status": "IDLE"
+                "status": "IDLE",
+                "ownerPid": None
             }
         try:
             with open(self.lock_file, "r") as f:
@@ -80,14 +81,16 @@ class LocalResourceLock:
                     "activeJobId": data.get("activeJobId"),
                     "activeStage": data.get("activeStage"),
                     "startedAt": data.get("startedAt"),
-                    "status": data.get("status", "IDLE")
+                    "status": data.get("status", "IDLE"),
+                    "ownerPid": data.get("ownerPid")
                 }
         except Exception:
             return {
                 "activeJobId": None,
                 "activeStage": None,
                 "startedAt": None,
-                "status": "IDLE"
+                "status": "IDLE",
+                "ownerPid": None
             }
 
     def _write_lock(self, data):
@@ -99,12 +102,25 @@ class LocalResourceLock:
         except Exception as e:
             print(f"[Resource Lock] Error writing lock file: {e}", file=sys.stderr)
 
-    def acquire(self, job_id: str, stage: str) -> bool:
-        with self.thread_lock:
-            lock_data = self._read_lock()
+    def _check_and_release_stale_lock_without_thread_lock(self):
+        lock_data = self._read_lock()
+        if lock_data["status"] == "BUSY":
+            # 1. Check if the owner process is still running
+            pid = lock_data.get("ownerPid")
+            if pid:
+                import psutil
+                process_exists = False
+                try:
+                    process_exists = psutil.pid_exists(pid)
+                except Exception:
+                    pass
+                if not process_exists:
+                    print(f"[Resource Lock] Force releasing stale lock: Owner process PID {pid} is no longer running.", file=sys.stderr)
+                    self.release_without_thread_lock()
+                    return
             
-            # Check timeout of current lock if BUSY
-            if lock_data["status"] == "BUSY" and lock_data["startedAt"]:
+            # 2. Timeout check fallback
+            if lock_data["startedAt"]:
                 try:
                     started_dt = datetime.datetime.fromisoformat(lock_data["startedAt"])
                     timeout_mins = int(os.environ.get("LOCAL_RESOURCE_LOCK_TIMEOUT_MINUTES", "60"))
@@ -112,9 +128,13 @@ class LocalResourceLock:
                     if elapsed > timeout_mins:
                         print(f"[Resource Lock] Force releasing stale lock for job {lock_data['activeJobId']} stage {lock_data['activeStage']} due to timeout.", file=sys.stderr)
                         self.release_without_thread_lock()
-                        lock_data = self._read_lock()
                 except Exception as ex:
                     print(f"[Resource Lock] Error parsing lock timestamp: {ex}", file=sys.stderr)
+
+    def acquire(self, job_id: str, stage: str) -> bool:
+        with self.thread_lock:
+            self._check_and_release_stale_lock_without_thread_lock()
+            lock_data = self._read_lock()
             
             if lock_data["status"] == "BUSY":
                 # Check if it's the same job and stage (re-entrant lock)
@@ -129,7 +149,8 @@ class LocalResourceLock:
                 "activeJobId": job_id,
                 "activeStage": stage,
                 "startedAt": datetime.datetime.now().isoformat(),
-                "status": "BUSY"
+                "status": "BUSY",
+                "ownerPid": os.getpid()
             }
             self._write_lock(new_data)
             print(f"[Resource Lock] Acquired lock for job {job_id}, stage {stage}")
@@ -144,13 +165,15 @@ class LocalResourceLock:
             "activeJobId": None,
             "activeStage": None,
             "startedAt": None,
-            "status": "IDLE"
+            "status": "IDLE",
+            "ownerPid": None
         }
         self._write_lock(new_data)
         print("[Resource Lock] Released lock")
         
     def get_status(self):
         with self.thread_lock:
+            self._check_and_release_stale_lock_without_thread_lock()
             return self._read_lock()
 
 resource_lock = LocalResourceLock(config.LOCAL_WORKSPACE_ROOT)

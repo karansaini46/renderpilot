@@ -57,6 +57,32 @@ import sys
 import json
 import mathutils
 
+def import_model_file(filepath):
+    ext = os.path.splitext(filepath)[1].lower()
+    
+    # Delete default mesh objects to avoid rendering them
+    for obj in list(bpy.context.scene.objects):
+        if obj.type == 'MESH':
+            bpy.data.objects.remove(obj, do_unlink=True)
+            
+    if ext == '.obj':
+        if hasattr(bpy.ops.wm, 'obj_import'):
+            bpy.ops.wm.obj_import(filepath=filepath)
+        else:
+            bpy.ops.import_scene.obj(filepath=filepath)
+    elif ext == '.fbx':
+        if hasattr(bpy.ops.wm, 'fbx_import'):
+            bpy.ops.wm.fbx_import(filepath=filepath)
+        else:
+            bpy.ops.import_scene.fbx(filepath=filepath)
+    elif ext in ['.glb', '.gltf']:
+        if hasattr(bpy.ops.import_scene, 'gltf'):
+            bpy.ops.import_scene.gltf(filepath=filepath)
+        elif hasattr(bpy.ops.wm, 'gltf_import'):
+            bpy.ops.wm.gltf_import(filepath=filepath)
+    else:
+        raise ValueError(f"Unsupported model file format: {ext}")
+
 def get_scene_bounding_box():
     meshes = [obj for obj in bpy.context.scene.objects if obj.type == 'MESH']
     if not meshes:
@@ -122,7 +148,13 @@ def extract_scene_materials(output_dir):
     with open(out_path, "w") as f:
         json.dump(detected, f)
 
-def setup_and_render_previews(output_dir):
+def setup_and_render_previews(output_dir, model_path=None):
+    if model_path:
+        try:
+            import_model_file(model_path)
+        except Exception as e:
+            print(f"Error importing model file: {e}", file=sys.stderr)
+            raise e
     try:
         extract_scene_materials(output_dir)
     except Exception as e:
@@ -211,7 +243,9 @@ argv = sys.argv
 if "--" in argv:
     args = argv[argv.index("--") + 1:]
     if len(args) >= 1:
-        setup_and_render_previews(args[0])
+        output_dir = args[0]
+        model_path = args[1] if len(args) > 1 else None
+        setup_and_render_previews(output_dir, model_path)
 """
     with open(script_path, "w") as f:
         f.write(script_content)
@@ -224,7 +258,39 @@ def write_render_script(script_path: str, camera_config: dict = None) -> None:
 import os
 import sys
 
-def setup_scene_and_render(output_dir):
+def import_model_file(filepath):
+    ext = os.path.splitext(filepath)[1].lower()
+    
+    # Delete default mesh objects to avoid rendering them
+    for obj in list(bpy.context.scene.objects):
+        if obj.type == 'MESH':
+            bpy.data.objects.remove(obj, do_unlink=True)
+            
+    if ext == '.obj':
+        if hasattr(bpy.ops.wm, 'obj_import'):
+            bpy.ops.wm.obj_import(filepath=filepath)
+        else:
+            bpy.ops.import_scene.obj(filepath=filepath)
+    elif ext == '.fbx':
+        if hasattr(bpy.ops.wm, 'fbx_import'):
+            bpy.ops.wm.fbx_import(filepath=filepath)
+        else:
+            bpy.ops.import_scene.fbx(filepath=filepath)
+    elif ext in ['.glb', '.gltf']:
+        if hasattr(bpy.ops.import_scene, 'gltf'):
+            bpy.ops.import_scene.gltf(filepath=filepath)
+        elif hasattr(bpy.ops.wm, 'gltf_import'):
+            bpy.ops.wm.gltf_import(filepath=filepath)
+    else:
+        raise ValueError(f"Unsupported model file format: {ext}")
+
+def setup_scene_and_render(output_dir, model_path=None):
+    if model_path:
+        try:
+            import_model_file(model_path)
+        except Exception as e:
+            print(f"Error importing model file: {e}", file=sys.stderr)
+            raise e
     # Set engine to EEVEE (very fast and laptop/RTX 3050 safe)
     try:
         bpy.context.scene.render.engine = 'BLENDER_EEVEE_NEXT'
@@ -329,7 +395,9 @@ argv = sys.argv
 if "--" in argv:
     args = argv[argv.index("--") + 1:]
     if len(args) >= 1:
-        setup_scene_and_render(args[0])
+        output_dir = args[0]
+        model_path = args[1] if len(args) > 1 else None
+        setup_scene_and_render(output_dir, model_path)
 """
     with open(script_path, "w") as f:
         f.write(script_content)
@@ -339,6 +407,15 @@ def run_blender_pipeline(job_id: str, project_id: str, settings_json: str, local
     Runs the Blender headless rendering pipeline with an optional camera config.
     """
     print(f"[{datetime.datetime.now().strftime('%T')}] [Blender Pipeline] Starting render pipeline for Job {job_id}")
+    
+    # Check format first
+    ext = os.path.splitext(local_blend_path)[1].lower()
+    if ext in ['.skp', '.skb']:
+        raise ValueError("SketchUp (.skp/.skb) files are not natively supported by Blender. Please export your model to .blend, .obj, .fbx, or .glb format and upload again.")
+    elif ext not in ['.blend', '.obj', '.fbx', '.glb', '.gltf']:
+        raise ValueError(f"Unsupported 3D model format: {ext}")
+        
+    is_blend = ext == '.blend'
     
     workspace_dir = os.path.join(config.LOCAL_WORKSPACE_ROOT, "blender_jobs", job_id)
     os.makedirs(workspace_dir, exist_ok=True)
@@ -352,12 +429,20 @@ def run_blender_pipeline(job_id: str, project_id: str, settings_json: str, local
     if blender_path and os.path.exists(blender_path) and local_blend_path and os.path.exists(local_blend_path):
         try:
             print(f"[{datetime.datetime.now().strftime('%T')}] [Blender Pipeline] Launching headless Blender process...")
-            cmd = [
-                blender_path,
-                "-b", local_blend_path,
-                "-P", script_path,
-                "--", workspace_dir
-            ]
+            if is_blend:
+                cmd = [
+                    blender_path,
+                    "-b", local_blend_path,
+                    "-P", script_path,
+                    "--", workspace_dir
+                ]
+            else:
+                cmd = [
+                    blender_path,
+                    "-b",
+                    "-P", script_path,
+                    "--", workspace_dir, local_blend_path
+                ]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if result.returncode == 0:
                 print(f"[{datetime.datetime.now().strftime('%T')}] [Blender Pipeline] Headless rendering completed successfully.")
@@ -406,6 +491,16 @@ def run_camera_preview_pipeline(job_id: str, project_id: str, user_id: str, loca
     Runs the Blender headless camera preview pipeline to generate 3 camera candidates.
     """
     print(f"[{datetime.datetime.now().strftime('%T')}] [Blender Previews] Starting camera setup for Job {job_id}")
+    
+    # Check format first
+    ext = os.path.splitext(local_blend_path)[1].lower()
+    if ext in ['.skp', '.skb']:
+        raise ValueError("SketchUp (.skp/.skb) files are not natively supported by Blender. Please export your model to .blend, .obj, .fbx, or .glb format and upload again.")
+    elif ext not in ['.blend', '.obj', '.fbx', '.glb', '.gltf']:
+        raise ValueError(f"Unsupported 3D model format: {ext}")
+        
+    is_blend = ext == '.blend'
+    
     from storage import uploadFileFromWorker
     
     workspace_dir = os.path.join(config.LOCAL_WORKSPACE_ROOT, "blender_jobs", job_id)
@@ -420,12 +515,20 @@ def run_camera_preview_pipeline(job_id: str, project_id: str, user_id: str, loca
     if blender_path and os.path.exists(blender_path) and local_blend_path and os.path.exists(local_blend_path):
         try:
             print(f"[{datetime.datetime.now().strftime('%T')}] [Blender Previews] Launching headless Blender process...")
-            cmd = [
-                blender_path,
-                "-b", local_blend_path,
-                "-P", script_path,
-                "--", workspace_dir
-            ]
+            if is_blend:
+                cmd = [
+                    blender_path,
+                    "-b", local_blend_path,
+                    "-P", script_path,
+                    "--", workspace_dir
+                ]
+            else:
+                cmd = [
+                    blender_path,
+                    "-b",
+                    "-P", script_path,
+                    "--", workspace_dir, local_blend_path
+                ]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
             if result.returncode == 0:
                 print(f"[{datetime.datetime.now().strftime('%T')}] [Blender Previews] Camera candidates generated successfully.")
