@@ -16,15 +16,25 @@ export async function POST(
     }
 
     const { filename, key, fileType, metadata } = body;
+    let resolvedFileType = fileType;
+    if (!resolvedFileType && filename) {
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      if (ext === 'skp') resolvedFileType = 'model/skp';
+      else if (ext === 'blend') resolvedFileType = 'model/blend';
+      else if (ext === 'obj') resolvedFileType = 'model/obj';
+      else if (ext === 'fbx') resolvedFileType = 'model/fbx';
+      else if (ext === 'glb') resolvedFileType = 'model/gltf-binary';
+      else resolvedFileType = 'application/octet-stream';
+    }
 
-    if (!filename || !key || !fileType) {
+    if (!filename || !key || !resolvedFileType) {
       return NextResponse.json(
         { error: 'Missing required fields: filename, key, and fileType are required' },
         { status: 400 }
       );
     }
 
-    const newFile = await storeFileMetadata(projectId, filename, key, fileType, metadata || {});
+    const newFile = await storeFileMetadata(projectId, filename, key, resolvedFileType, metadata || {});
 
     return NextResponse.json(newFile, { status: 201 });
 

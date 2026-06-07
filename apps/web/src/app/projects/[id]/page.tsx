@@ -684,6 +684,16 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
       return;
     }
 
+    let guessedType = selectedFile.type;
+    if (!guessedType) {
+      if (fileExtension === 'skp') guessedType = 'model/skp';
+      else if (fileExtension === 'blend') guessedType = 'model/blend';
+      else if (fileExtension === 'obj') guessedType = 'model/obj';
+      else if (fileExtension === 'fbx') guessedType = 'model/fbx';
+      else if (fileExtension === 'glb') guessedType = 'model/gltf-binary';
+      else guessedType = 'application/octet-stream';
+    }
+
     setUploadProgress(10);
     try {
       // 2. Request upload URL from adapter gateway
@@ -694,7 +704,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
           projectId: id,
           folder: 'inputs',
           filename: filename,
-          contentType: selectedFile.type || 'application/octet-stream',
+          contentType: guessedType,
         }),
       });
 
@@ -710,7 +720,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
         method: method, // PUT for S3, POST for local dev fallback
         body: selectedFile,
         headers: {
-          'Content-Type': selectedFile.type,
+          'Content-Type': guessedType,
         },
       });
 
@@ -726,7 +736,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
         body: JSON.stringify({
           filename: filename,
           key: key,
-          fileType: selectedFile.type,
+          fileType: guessedType,
           metadata: {
             size: `${(selectedFile.size / (1024 * 1024)).toFixed(2)} MB`,
             uploadedAt: new Date().toISOString(),
