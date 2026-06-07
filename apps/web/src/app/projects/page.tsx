@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { 
   Folder, 
   Search, 
@@ -29,6 +29,7 @@ interface Project {
 }
 
 function ProjectsList() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const [projects, setProjects] = useState<Project[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -89,7 +90,8 @@ function ProjectsList() {
       });
 
       if (res.ok) {
-        // Reset form and reload projects
+        const newProject = await res.json();
+        // Reset form
         setProjectName('');
         setClientName('');
         setProjectType('Residential');
@@ -97,7 +99,8 @@ function ProjectsList() {
         setStylePreference('Modern Luxury Exterior');
         setNotes('');
         setIsModalOpen(false);
-        await fetchProjects();
+        // Redirect to new project details page where user can upload image/model files
+        router.push(`/projects/${newProject.id}`);
       }
     } catch (err) {
       console.error('Failed to create project:', err);
