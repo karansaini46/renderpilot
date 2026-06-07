@@ -240,14 +240,7 @@ export async function POST(request: Request) {
       resolvedJobType = 'base_render_model';
     }
 
-    if (resolvedJobType === 'base_render_model') {
-      if (process.env.BLENDER_PIPELINE_ENABLED !== 'true') {
-        return NextResponse.json(
-          { error: 'Blender pipeline (base_render_model) is currently disabled behind a feature flag.' },
-          { status: 400 }
-        );
-      }
-    }
+
 
     if (userSettings.job_type === 'upscale_selected' || userSettings.jobType === 'upscale_selected') {
       const renderId = userSettings.renderId;
