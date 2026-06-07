@@ -182,18 +182,27 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
         
         // Resolve download URLs for all project files
         const resolvedFiles = await Promise.all(
-          (data.projectFiles || []).map(async (file) => {
-            try {
-              const urlRes = await fetch(`/api/storage/download-url?key=${encodeURIComponent(file.fileUrl)}`);
-              if (urlRes.ok) {
-                const urlData = await urlRes.json();
-                return { ...file, downloadUrl: urlData.url };
+          (data.projectFiles || [])
+            .filter((file) => {
+              try {
+                const meta = JSON.parse(file.metadataJson || '{}');
+                return meta.role !== 'control_pass' && meta.role !== 'control_map';
+              } catch {
+                return true;
               }
-            } catch (err) {
-              console.error('Failed to get download URL:', err);
-            }
-            return file;
-          })
+            })
+            .map(async (file) => {
+              try {
+                const urlRes = await fetch(`/api/storage/download-url?key=${encodeURIComponent(file.fileUrl)}`);
+                if (urlRes.ok) {
+                  const urlData = await urlRes.json();
+                  return { ...file, downloadUrl: urlData.url };
+                }
+              } catch (err) {
+                console.error('Failed to get download URL:', err);
+              }
+              return file;
+            })
         );
         setFilesList(resolvedFiles);
 

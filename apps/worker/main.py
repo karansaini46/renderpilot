@@ -899,14 +899,14 @@ def _process_job_impl(conn, job):
             file_row = cur.fetchone()
             
             if not file_row:
-                # Fall back to the most recently uploaded file that is not a control map
+                # Fall back to the most recently uploaded file that is not a control map or control pass
                 cur.execute("""
                     SELECT file_url FROM project_files 
                     WHERE project_id = %s 
                       AND file_type LIKE 'image/%%'
                       AND (
                         CASE WHEN metadata_json IS NOT NULL AND metadata_json != '' THEN metadata_json::json->>'role' ELSE NULL END IS NULL 
-                        OR CASE WHEN metadata_json IS NOT NULL AND metadata_json != '' THEN metadata_json::json->>'role' ELSE NULL END != 'control_map'
+                        OR CASE WHEN metadata_json IS NOT NULL AND metadata_json != '' THEN metadata_json::json->>'role' ELSE NULL END NOT IN ('control_map', 'control_pass')
                       )
                       AND file_url NOT LIKE '%%canny_%%' AND file_url NOT LIKE '%%depth_%%'
                     ORDER BY created_at DESC 
@@ -915,20 +915,29 @@ def _process_job_impl(conn, job):
                 file_row = cur.fetchone()
                 
             if not file_row:
-                # Absolute fallback to any image file
+                # Absolute fallback to any image file that is not a control map or control pass
                 cur.execute("""
                     SELECT file_url FROM project_files 
-                    WHERE project_id = %s AND file_type LIKE 'image/%%'
+                    WHERE project_id = %s 
+                      AND file_type LIKE 'image/%%'
+                      AND (
+                        CASE WHEN metadata_json IS NOT NULL AND metadata_json != '' THEN metadata_json::json->>'role' ELSE NULL END IS NULL 
+                        OR CASE WHEN metadata_json IS NOT NULL AND metadata_json != '' THEN metadata_json::json->>'role' ELSE NULL END NOT IN ('control_map', 'control_pass')
+                      )
                     ORDER BY created_at DESC 
                     LIMIT 1;
                 """, (project_id,))
                 file_row = cur.fetchone()
                 
             if not file_row:
-                # Fall back to any file type if no specific image type is marked
+                # Fall back to any file type that is not a control map or control pass
                 cur.execute("""
                     SELECT file_url FROM project_files 
                     WHERE project_id = %s 
+                      AND (
+                        CASE WHEN metadata_json IS NOT NULL AND metadata_json != '' THEN metadata_json::json->>'role' ELSE NULL END IS NULL 
+                        OR CASE WHEN metadata_json IS NOT NULL AND metadata_json != '' THEN metadata_json::json->>'role' ELSE NULL END NOT IN ('control_map', 'control_pass')
+                      )
                     ORDER BY created_at DESC 
                     LIMIT 1;
                 """, (project_id,))
