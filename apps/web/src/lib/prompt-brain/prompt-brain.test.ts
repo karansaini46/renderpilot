@@ -463,7 +463,7 @@ async function runTests() {
       data: mockBedroomAnalysis
     };
 
-    // Pass explicit denoise = 0.62
+    // Pass explicit denoise = 0.32
     const request = new Request('http://localhost/api/jobs', {
       method: 'POST',
       body: JSON.stringify({
@@ -472,7 +472,7 @@ async function runTests() {
           sceneType: 'Interior',
           projectType: 'Residential',
           styleId: 'style_warm_int',
-          denoise: 0.62,
+          denoise: 0.32,
         })
       })
     });
@@ -483,8 +483,8 @@ async function runTests() {
     const createdJob = mockRenderJobs[0];
     const finalSettings = JSON.parse(createdJob.settingsJson);
 
-    // Verify it is exactly 0.62
-    assert.strictEqual(finalSettings.denoise, 0.62, 'Explicit denoise must survive into worker settings');
+    // Verify it is exactly 0.32
+    assert.strictEqual(finalSettings.denoise, 0.32, 'Explicit denoise must survive into worker settings');
 
     console.log('  -> PASS');
   }

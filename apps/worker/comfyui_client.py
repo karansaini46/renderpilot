@@ -113,6 +113,28 @@ class ComfyUIClient:
                 f"[ComfyUI Error] Unexpected error checking ComfyUI health: {e}"
             )
 
+    def get_available_controlnets(self) -> list[str]:
+        try:
+            resp = requests.get(f"{self.base_url}/object_info/ControlNetLoader", timeout=5)
+            if resp.ok:
+                data = resp.json()
+                models = data.get("ControlNetLoader", {}).get("input", {}).get("required", {}).get("control_net_name", [])[0]
+                return models or []
+            return []
+        except Exception:
+            return []
+
+    def find_best_controlnet(self, pattern: str, available_models: list[str]) -> str | None:
+        pattern = pattern.lower()
+        matches = [m for m in available_models if pattern in m.lower()]
+        if not matches:
+            return None
+        # Prioritize SD1.5 models (e.g. containing 'sd15', 'v11', or not containing 'xl'/'sdxl')
+        matches.sort(key=lambda x: (
+            ("sd15" in x.lower() or "v11" in x.lower()) and not ("sdxl" in x.lower() or "xl" in x.lower())
+        ), reverse=True)
+        return matches[0]
+
     def check_controlnet_available(self, model_name: str) -> bool:
         """
         Queries ComfyUI to check if a specific ControlNet model is available.
@@ -122,8 +144,15 @@ class ComfyUIClient:
             if resp.ok:
                 data = resp.json()
                 models = data.get("ControlNetLoader", {}).get("input", {}).get("required", {}).get("control_net_name", [])[0]
-                if models and model_name in models:
-                    return True
+                if models:
+                    if model_name in models:
+                        return True
+                    # Fallback check to see if any model matches the name pattern (e.g. canny or depth)
+                    clean_name = model_name.lower()
+                    if "canny" in clean_name and any("canny" in m.lower() for m in models):
+                        return True
+                    if "depth" in clean_name and any("depth" in m.lower() for m in models):
+                        return True
             return False
         except Exception:
             return False
@@ -203,6 +232,8 @@ class ComfyUIClient:
         prompt_brain_provider: str = 'unknown',
         edge_control_strength: float | None = None,
         depth_control_strength: float | None = None,
+        upscale_factor: float | None = None,
+        upscale_denoise: float | None = None,
     ) -> dict:
         """
         Injects render parameters into a workflow template by scanning
@@ -230,7 +261,7 @@ class ComfyUIClient:
         """
         # Map geometry lock mode to ComfyUI variables
         # Dual ControlNet strength profiles: (depth_strength, canny_strength)
-        mode = (geometry_lock_mode or 'accurate').lower()
+        mode = (geometry_lock_mode or 'balanced_archviz').lower()
 
         control_strength_map = {
             'creative': 0.40,
@@ -241,7 +272,11 @@ class ComfyUIClient:
             'creative_concept': 0.35,
             'balanced_enhancement': 0.55,
             'strict_structure': 0.90,
-            'faithful': 0.90
+            'faithful': 0.90,
+            # New profiles:
+            'strict_geometry': 0.85,      # depth 0.85
+            'balanced_archviz': 0.80,     # depth 0.80
+            'high_realism': 0.75,         # depth 0.75
         }
 
         canny_strength_map = {
@@ -253,7 +288,11 @@ class ComfyUIClient:
             'creative_concept': 0.25,
             'balanced_enhancement': 0.38,
             'strict_structure': 0.60,
-            'faithful': 0.60
+            'faithful': 0.60,
+            # New profiles:
+            'strict_geometry': 0.80,      # canny 0.80
+            'balanced_archviz': 0.65,     # canny 0.65
+            'high_realism': 0.50,         # canny 0.50
         }
 
         mode_depth_strength = control_strength_map.get(mode, 0.75)
@@ -267,23 +306,20 @@ class ComfyUIClient:
             'accurate': 0.90,
             'technical': 1.0,
             'strict_structure': 1.0,
-            'faithful': 1.0
+            'faithful': 1.0,
+            'strict_geometry': 1.0,
+            'balanced_archviz': 1.0,
+            'high_realism': 1.0
         }
         control_strength = generic_strength_map.get(mode, 0.90)
 
         prompt_constraint = ""
-        if mode == 'strict_structure':
+        if mode in ('strict_geometry', 'strict_structure'):
             prompt_constraint = "photorealistic architectural render optimization, realistic materials, natural lighting, accurate shadows, glass reflections, realistic texture detail, professional archviz polish, same building geometry, same camera composition"
-        elif mode == 'balanced_enhancement':
+        elif mode in ('balanced_archviz', 'balanced_enhancement', 'balanced'):
             prompt_constraint = "preserves composition, balanced style changes"
-        elif mode == 'creative_concept':
-            prompt_constraint = "more visual freedom, creative details, concept rendering"
-        elif mode == 'creative':
+        elif mode in ('high_realism', 'creative_concept', 'creative'):
             prompt_constraint = "more visual freedom, creative details"
-        elif mode == 'balanced':
-            prompt_constraint = "preserves composition, balanced style changes"
-        elif mode == 'accurate':
-            prompt_constraint = "strict composition preservation, realistic structure, client-ready layout"
         elif mode in ('technical', 'faithful'):
             prompt_constraint = "strongest preservation of contours, exact geometry, technical blueprint match"
         else:
@@ -295,12 +331,14 @@ class ComfyUIClient:
 
         mapped_denoise = denoise
         if mapped_denoise is None:
-            if mode in ("creative_concept", "creative"):
+            if mode in ('strict_geometry', 'strict_structure'):
+                mapped_denoise = 0.32
+            elif mode in ('balanced_archviz', 'balanced_enhancement', 'balanced'):
+                mapped_denoise = 0.38
+            elif mode in ('high_realism', 'creative_concept', 'creative'):
                 mapped_denoise = 0.65
-            elif mode in ("balanced_enhancement", "balanced"):
-                mapped_denoise = 0.40
             else:
-                mapped_denoise = 0.25
+                mapped_denoise = 0.38
 
         # Log final parameters
         print(f"[ComfyUI Client] Final parameters: denoise={mapped_denoise}, geometryLockMode={mode}, control_strength={control_strength}, edge_strength={final_edge_strength}, depth_strength={final_depth_strength}, promptBrainProvider={prompt_brain_provider}")
@@ -310,11 +348,25 @@ class ComfyUIClient:
         resolved_depth_control_image = input_image if depth_control_image == "NOT_PROVIDED" else depth_control_image
 
         # Check ControlNet model availability (both depth and canny) and presence of images
-        canny_ok = self.check_controlnet_available("control_v11p_sd15_canny.pth")
-        depth_ok = self.check_controlnet_available("control_v11f1p_sd15_depth.pth")
+        available_cn = self.get_available_controlnets()
 
-        has_depth = depth_ok and (resolved_depth_control_image is not None)
-        has_canny = canny_ok and (resolved_control_image is not None)
+        has_canny_model = False
+        has_depth_model = False
+
+        canny_in_template = workflow.get("13", {}).get("inputs", {}).get("control_net_name")
+        if canny_in_template in available_cn:
+            has_canny_model = True
+        elif self.find_best_controlnet("canny", available_cn) is not None:
+            has_canny_model = True
+
+        depth_in_template = workflow.get("10", {}).get("inputs", {}).get("control_net_name")
+        if depth_in_template in available_cn:
+            has_depth_model = True
+        elif self.find_best_controlnet("depth", available_cn) is not None:
+            has_depth_model = True
+
+        has_canny = has_canny_model and (resolved_control_image is not None)
+        has_depth = has_depth_model and (resolved_depth_control_image is not None)
 
         if not has_depth or not has_canny:
             if not has_depth and not has_canny:
@@ -353,11 +405,14 @@ class ComfyUIClient:
 
             # KSampler and KSamplerAdvanced nodes — inject seed, steps, cfg, denoise
             if class_type in ('KSampler', 'KSamplerAdvanced'):
+                # Note: node "21" (Refiner KSampler) is handled separately after this loop.
+                if node_id == "21":
+                    continue
                 if 'seed' in inputs:
                     inputs['seed'] = seed
                 if 'steps' in inputs:
                     inputs['steps'] = steps
-                inputs['cfg'] = cfg_scale if cfg_scale is not None else 8.0
+                inputs['cfg'] = cfg_scale if cfg_scale is not None else 6.0
                 inputs['sampler_name'] = "dpmpp_2m"
                 inputs['scheduler'] = "karras"
                 if 'denoise' in inputs:
@@ -374,14 +429,25 @@ class ComfyUIClient:
                     else:
                         inputs['strength'] = control_strength
 
-            # ControlNetLoader node — preserve existing model name (depth vs canny)
-            # Each loader already has the correct model name from the workflow template;
-            # do not overwrite since we now have two distinct ControlNet models.
+            # ControlNetLoader node — preserve existing model name unless not available
             if class_type == 'ControlNetLoader':
-                pass  # Model names are set in the workflow JSON template
+                if 'control_net_name' in inputs:
+                    current_cn = inputs['control_net_name']
+                    meta_title = node.get('_meta', {}).get('title', '').lower()
+                    
+                    if current_cn not in available_cn:
+                        # Fallback: Find matching available model
+                        pattern = "canny" if ('canny' in meta_title or 'edge' in meta_title) else "depth"
+                        fallback_cn = self.find_best_controlnet(pattern, available_cn)
+                        if fallback_cn:
+                            inputs['control_net_name'] = fallback_cn
+                            print(f"[ControlNet Fallback] Model '{current_cn}' not found. Falling back to available model: '{fallback_cn}'.", file=sys.stderr)
+                        elif available_cn:
+                            inputs['control_net_name'] = available_cn[0]
+                            print(f"[ControlNet Fallback] Model '{current_cn}' not found and no pattern match. Falling back to: '{available_cn[0]}'.", file=sys.stderr)
+                    print(f"[ControlNet Loader] ControlNet: {class_type} for title '{meta_title}' configured to use model '{inputs['control_net_name']}'")
 
             # CLIP Text Encode nodes — inject prompts with constraints
-            # Convention: node title or _meta.title containing "negative" gets negative prompt
             if class_type == 'CLIPTextEncode':
                 meta_title = node.get('_meta', {}).get('title', '').lower()
                 if 'negative' in meta_title or 'neg' in meta_title:
@@ -421,10 +487,20 @@ class ComfyUIClient:
                         if resp.ok:
                             models = resp.json().get('CheckpointLoaderSimple', {}).get('input', {}).get('required', {}).get('ckpt_name', [])[0]
                             if models:
-                                if current_model not in models:
+                                sd15_candidates = [m for m in models if any(x in m.lower() for x in ["realistic", "vision", "v60", "v1-5", "v1.5", "sd15", "sd1.5", "realisticvision"])]
+                                sdxl_candidates = [m for m in models if any(x in m.lower() for x in ["sdxl", "xl", "realarchviz", "realvis", "juggernaut", "arch"])]
+                                if current_model in models:
+                                    pass
+                                elif sd15_candidates:
+                                    inputs['ckpt_name'] = sd15_candidates[0]
+                                    print(f"[{self.base_url}] Checkpoint '{current_model}' not found. Selecting SD1.5 candidate: '{sd15_candidates[0]}'.")
+                                elif sdxl_candidates:
+                                    inputs['ckpt_name'] = sdxl_candidates[0]
+                                    print(f"[{self.base_url}] Checkpoint '{current_model}' not found. Selecting SDXL candidate: '{sdxl_candidates[0]}'.")
+                                else:
                                     fallback = models[0]
-                                    print(f"[{self.base_url}] Model '{current_model}' not found in ComfyUI list. Fallback to '{fallback}'.", file=sys.stderr)
                                     inputs['ckpt_name'] = fallback
+                                    print(f"[{self.base_url}] Model '{current_model}' not found in ComfyUI list. Fallback to '{fallback}'.", file=sys.stderr)
                     except Exception as e:
                         print(f"[{self.base_url}] Warning: Failed to query available models: {e}", file=sys.stderr)
 
@@ -432,6 +508,36 @@ class ComfyUIClient:
             if class_type in ('SaveImage', 'PreviewImage'):
                 if 'filename_prefix' in inputs and output_folder:
                     inputs['filename_prefix'] = output_folder
+
+        # Configure optional Latent Upscale & Refiner nodes
+        is_upscale_pass = upscale_factor is not None and upscale_factor > 1.0
+        if is_upscale_pass:
+            print(f"[ComfyUI Client] Configuring upscale/refiner pass with factor={upscale_factor}, denoise={upscale_denoise or 0.18}")
+            if "20" in workflow:
+                workflow["20"]["inputs"]["scale_by"] = upscale_factor
+            if "21" in workflow:
+                refiner_inputs = workflow["21"]["inputs"]
+                refiner_inputs["seed"] = seed
+                refiner_inputs["steps"] = steps
+                refiner_inputs["cfg"] = cfg_scale if cfg_scale is not None else 6.0
+                refiner_inputs["sampler_name"] = "dpmpp_2m"
+                refiner_inputs["scheduler"] = "karras"
+                refiner_inputs["denoise"] = upscale_denoise if upscale_denoise is not None else 0.18
+
+                if "3" in workflow:
+                    refiner_inputs["model"] = workflow["3"]["inputs"].get("model")
+                    refiner_inputs["positive"] = workflow["3"]["inputs"].get("positive")
+                    refiner_inputs["negative"] = workflow["3"]["inputs"].get("negative")
+            
+            if "8" in workflow:
+                workflow["8"]["inputs"]["samples"] = ["21", 0]
+        else:
+            if "8" in workflow:
+                workflow["8"]["inputs"]["samples"] = ["3", 0]
+            if "20" in workflow:
+                del workflow["20"]
+            if "21" in workflow:
+                del workflow["21"]
 
         # Attempt to upgrade VAEDecode → VAETilingDecode for OOM protection on 4GB VRAM
         try:
@@ -444,6 +550,14 @@ class ComfyUIClient:
                         print("[ComfyUI Client] Upgraded VAEDecode -> VAETilingDecode (OOM protection for 4GB VRAM)")
         except Exception:
             pass  # VAETilingDecode not available, keep VAEDecode
+
+        # Detailed Logging
+        print(f"[Render Profile] Chosen render profile / geometry lock mode: {mode}")
+        print(f"[First Pass Settings] sampler_name=dpmpp_2m, scheduler=karras, steps={steps}, cfg={cfg_scale}, denoise={mapped_denoise}, depth_strength={final_depth_strength}, canny_strength={final_edge_strength}")
+        if is_upscale_pass:
+            print(f"[Second Pass/Upscale Settings] Enabled: True, upscale_factor={upscale_factor}, upscale_denoise={upscale_denoise or 0.18}, steps={steps}, cfg={cfg_scale}")
+        else:
+            print(f"[Second Pass/Upscale Settings] Enabled: False (upscale_factor is None or <= 1.0)")
 
         return workflow
 
@@ -777,6 +891,8 @@ class ComfyUIClient:
         prompt_brain_provider: str = 'unknown',
         edge_control_strength: float | None = None,
         depth_control_strength: float | None = None,
+        upscale_factor: float | None = None,
+        upscale_denoise: float | None = None,
     ) -> list[str]:
         """
         End-to-end render pipeline: load template, inject params, submit,
@@ -829,6 +945,8 @@ class ComfyUIClient:
             prompt_brain_provider=prompt_brain_provider,
             edge_control_strength=edge_control_strength,
             depth_control_strength=depth_control_strength,
+            upscale_factor=upscale_factor,
+            upscale_denoise=upscale_denoise,
         )
 
         # Step 3: Submit workflow

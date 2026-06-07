@@ -136,7 +136,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
   const [selectedSceneType, setSelectedSceneType] = useState('Exterior');
   const [selectedProjectType, setSelectedProjectType] = useState('Residential');
   const [selectedMaterials, setSelectedMaterials] = useState<string[]>([]);
-  const [selectedGeometryLockMode, setSelectedGeometryLockMode] = useState('strict_structure');
+  const [selectedGeometryLockMode, setSelectedGeometryLockMode] = useState('balanced_archviz');
   const [forceRegenerate, setForceRegenerate] = useState(false);
   const [promptModifier, setPromptModifier] = useState('');
 
@@ -501,16 +501,16 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
     
     const activeSceneType = project.sceneType || 'Exterior';
     let stylePresetId = matchingPreset?.id || 'style_mod_lux_ext';
-    let geometryMode = matchingPreset?.defaultGeometryLockMode || 'strict_structure';
+    let geometryMode: string = matchingPreset?.defaultGeometryLockMode || 'balanced_archviz';
 
-    if (geometryMode === 'accurate' || geometryMode === 'technical' || geometryMode === 'strict_structure') {
-      geometryMode = 'strict_structure';
-    } else if (geometryMode === 'balanced' || geometryMode === 'balanced_enhancement') {
-      geometryMode = 'balanced_enhancement';
-    } else if (geometryMode === 'creative' || geometryMode === 'creative_concept') {
-      geometryMode = 'creative_concept';
+    if (geometryMode === 'strict_geometry' || geometryMode === 'strict' || geometryMode === 'accurate' || geometryMode === 'technical' || geometryMode === 'strict_structure') {
+      geometryMode = 'strict_geometry';
+    } else if (geometryMode === 'balanced_archviz' || geometryMode === 'balanced' || geometryMode === 'balanced_enhancement') {
+      geometryMode = 'balanced_archviz';
+    } else if (geometryMode === 'high_realism' || geometryMode === 'creative' || geometryMode === 'creative_concept') {
+      geometryMode = 'high_realism';
     } else {
-      geometryMode = 'strict_structure';
+      geometryMode = 'balanced_archviz';
     }
 
     // Verify compatibility of current preset with the active sceneType
@@ -519,13 +519,13 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
       const fallbackPreset = STYLE_PRESETS.find(s => !s.allowedSceneTypes || s.allowedSceneTypes.includes(activeSceneType));
       if (fallbackPreset) {
         stylePresetId = fallbackPreset.id;
-        const fbLockMode = fallbackPreset.defaultGeometryLockMode || 'strict_structure';
-        if (fbLockMode === 'accurate' || fbLockMode === 'technical' || fbLockMode === 'strict_structure') {
-          geometryMode = 'strict_structure';
-        } else if (fbLockMode === 'balanced' || fbLockMode === 'balanced_enhancement') {
-          geometryMode = 'balanced_enhancement';
-        } else if (fbLockMode === 'creative' || fbLockMode === 'creative_concept') {
-          geometryMode = 'creative_concept';
+        const fbLockMode: string = fallbackPreset.defaultGeometryLockMode || 'balanced_archviz';
+        if (fbLockMode === 'strict_geometry' || fbLockMode === 'strict' || fbLockMode === 'accurate' || fbLockMode === 'technical' || fbLockMode === 'strict_structure') {
+          geometryMode = 'strict_geometry';
+        } else if (fbLockMode === 'balanced_archviz' || fbLockMode === 'balanced' || fbLockMode === 'balanced_enhancement') {
+          geometryMode = 'balanced_archviz';
+        } else if (fbLockMode === 'high_realism' || fbLockMode === 'creative' || fbLockMode === 'creative_concept') {
+          geometryMode = 'high_realism';
         }
       }
     }
@@ -578,7 +578,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
             sceneType: project.sceneType || 'Exterior',
             projectType: project.projectType || 'Residential',
             materialChoices: [],
-            geometryLockMode: 'strict_structure',
+            geometryLockMode: 'strict_geometry',
             denoise: newDenoise,
             promptModifier: prevPromptModifier || undefined
           })
@@ -677,16 +677,10 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
     const filename = selectedFile.name;
     const fileExtension = filename.split('.').pop()?.toLowerCase() || '';
     const imageExtensions = ['png', 'jpg', 'jpeg', 'webp'];
-    const modelExtensions = ['blend', 'glb', 'obj', 'fbx', 'zip'];
+    const modelExtensions = ['blend', 'skp', 'glb', 'obj', 'fbx', 'zip'];
 
-    // If it's a 3D model file, show the placeholder warning
-    if (modelExtensions.includes(fileExtension)) {
-      setUploadError('3D Model upload (e.g. .blend, .glb) is coming in a future update. Please upload reference image inputs (.png, .jpg, .jpeg, .webp) for ControlNet extraction first.');
-      return;
-    }
-
-    if (!imageExtensions.includes(fileExtension)) {
-      setUploadError('Unsupported file type. Please upload images (.png, .jpg, .jpeg, .webp) only.');
+    if (!imageExtensions.includes(fileExtension) && !modelExtensions.includes(fileExtension)) {
+      setUploadError('Unsupported file type. Please upload images (.png, .jpg, .jpeg, .webp) or 3D models (.blend, .skp, .glb, .obj, .fbx) only.');
       return;
     }
 
@@ -991,11 +985,11 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                         className="hidden" 
                         onChange={handleFileUpload}
                         disabled={uploadProgress !== null}
-                        accept="image/*,.blend,.glb,.obj,.fbx"
+                        accept="image/*,.blend,.glb,.obj,.fbx,.skp"
                       />
                       <Upload className="h-7 w-7 text-indigo-400 mx-auto" />
-                      <h3 className="text-xs font-bold text-slate-300 mt-2.5">Upload image inputs (.png, .jpg, .jpeg, .webp)</h3>
-                      <p className="text-[10px] text-slate-500 mt-1">Direct upload to S3/Local cache. 3D models will show placeholder warnings.</p>
+                      <h3 className="text-xs font-bold text-slate-300 mt-2.5">Upload image inputs (.png, .jpg, .jpeg, .webp) or 3D models (.blend, .skp, .glb, .obj, .fbx)</h3>
+                      <p className="text-[10px] text-slate-500 mt-1">Direct upload to S3/Local cache. 3D models are automatically preprocessed by the CAD pipeline.</p>
                       
                       {uploadProgress !== null && (
                         <div className="max-w-xs mx-auto mt-4">
@@ -1018,13 +1012,13 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                     )}
                   </div>
 
-                  {/* 3D Model placeholder placeholder notification */}
+                  {/* 3D Model status notification */}
                   <div className="p-4.5 rounded-lg bg-slate-950 border border-slate-900 flex items-start space-x-3.5">
                     <FolderOpen className="h-5 w-5 text-indigo-400/80 shrink-0 mt-0.5" />
                     <div>
-                      <h4 className="text-xs font-bold text-slate-300">3D Design Models (Blender/CAD)</h4>
+                      <h4 className="text-xs font-bold text-slate-300">3D Design Models Enabled</h4>
                       <p className="text-[10px] text-slate-500 mt-1 leading-relaxed">
-                        [Planned Feature] Drag-and-drop support for `.blend` scene hierarchies and `.glb` mesh models will be integrated in the next milestone release to feed the local asset extraction worker directly.
+                        Direct upload support for SketchUp (`.skp`), Blender (`.blend`), and other CAD/3D formats (`.glb`, `.obj`, `.fbx`) is active. The worker pipeline automatically processes models to generate geometry-aligned photorealistic renders.
                       </p>
                     </div>
                   </div>
@@ -2263,22 +2257,22 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                   {[
                     {
-                      id: 'strict_structure',
-                      name: 'Strict Lock (Recommended)',
-                      desc: 'Preserves building structure, camera angle, and elements strictly. Focuses on photorealistic materials and lighting without altering layout.',
-                      badge: 'Strict Lock'
+                      id: 'strict_geometry',
+                      name: 'Strict Geometry',
+                      desc: 'Locks the building shape, windows, doors, walls, balconies, gate, and camera angle strictly. Improves textures, lighting, and materials without changing geometry.',
+                      badge: 'Strict Geometry'
                     },
                     {
-                      id: 'balanced_enhancement',
-                      name: 'Balanced Enhancement',
-                      desc: 'Balances structural preservation with creative material and layout updates.',
-                      badge: 'Balanced Lock'
+                      id: 'balanced_archviz',
+                      name: 'Balanced Archviz (Default)',
+                      desc: 'Balances precise structural preservation with natural style enhancements, daylight shading, and vegetation polish.',
+                      badge: 'Balanced Archviz'
                     },
                     {
-                      id: 'creative_concept',
-                      name: 'Creative Concept',
-                      desc: 'Provides high creative freedom for design variations and early concepts. Output is labeled as a concept.',
-                      badge: 'Creative Lock'
+                      id: 'high_realism',
+                      name: 'High Realism',
+                      desc: 'Allows slight structural variance to maximize texture detail, realistic shadows, reflections, and cinematic lighting.',
+                      badge: 'High Realism'
                     }
                   ].map((mode) => {
                     const isSelected = selectedGeometryLockMode === mode.id;

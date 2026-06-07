@@ -9,8 +9,10 @@
   "12": { "class_type": "ControlNetApply", "inputs": { "conditioning": ["6", 0], "control_net": ["10", 0], "image": ["11", 0], "strength": 0.75 }, "_meta": { "title": "Apply Depth ControlNet" } },
   "13": { "class_type": "ControlNetLoader", "inputs": { "control_net_name": "control_v11p_sd15_canny.pth" }, "_meta": { "title": "Load Canny ControlNet" } },
   "14": { "class_type": "LoadImage", "inputs": { "image": "canny_input.png" }, "_meta": { "title": "Load Canny Control Image" } },
-  "15": { "class_type": "ControlNetApply", "inputs": { "conditioning": ["12", 0], "control_net": ["13", 0], "image": ["14", 0], "strength": 0.45 }, "_meta": { "title": "Apply Canny ControlNet" } },
-  "3": { "class_type": "KSampler", "inputs": { "model": ["4", 0], "positive": ["15", 0], "negative": ["7", 0], "latent_image": ["2", 0], "seed": 42, "steps": 22, "cfg": 8.0, "sampler_name": "dpmpp_2m", "scheduler": "karras", "denoise": 0.60 }, "_meta": { "title": "KSampler" } },
-  "8": { "class_type": "VAEDecode", "inputs": { "samples": ["3", 0], "vae": ["4", 2] }, "_meta": { "title": "VAE Decode" } },
+  "15": { "class_type": "ControlNetApply", "inputs": { "conditioning": ["12", 0], "control_net": ["13", 0], "image": ["14", 0], "strength": 0.90 }, "_meta": { "title": "Apply Canny ControlNet" } },
+  "3": { "class_type": "KSampler", "inputs": { "model": ["4", 0], "positive": ["15", 0], "negative": ["7", 0], "latent_image": ["2", 0], "seed": 42, "steps": 35, "cfg": 6.0, "sampler_name": "dpmpp_2m", "scheduler": "karras", "denoise": 0.38 }, "_meta": { "title": "KSampler" } },
+  "20": { "class_type": "LatentUpscaleBy", "inputs": { "samples": ["3", 0], "upscale_method": "nearest-exact", "scale_by": 1.5 }, "_meta": { "title": "Upscale Latent" } },
+  "21": { "class_type": "KSampler", "inputs": { "model": ["4", 0], "positive": ["15", 0], "negative": ["7", 0], "latent_image": ["20", 0], "seed": 42, "steps": 35, "cfg": 6.0, "sampler_name": "dpmpp_2m", "scheduler": "karras", "denoise": 0.18 }, "_meta": { "title": "KSampler Refiner" } },
+  "8": { "class_type": "VAEDecode", "inputs": { "samples": ["21", 0], "vae": ["4", 2] }, "_meta": { "title": "VAE Decode" } },
   "9": { "class_type": "SaveImage", "inputs": { "filename_prefix": "RenderPilot", "images": ["8", 0] }, "_meta": { "title": "Save Image" } }
 }

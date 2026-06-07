@@ -231,7 +231,16 @@ export async function POST(request: Request) {
       userSettings = {};
     }
 
-    if (userSettings.job_type === 'base_render_model' || userSettings.jobType === 'base_render_model') {
+    const latestFile = project.projectFiles[0];
+    const latestFileExt = latestFile?.fileUrl.split('.').pop()?.toLowerCase() || '';
+    const isModelFile = ['blend', 'skp', 'glb', 'obj', 'fbx', 'zip'].includes(latestFileExt);
+    
+    let resolvedJobType = userSettings.job_type || userSettings.jobType;
+    if (!resolvedJobType && isModelFile) {
+      resolvedJobType = 'base_render_model';
+    }
+
+    if (resolvedJobType === 'base_render_model') {
       if (process.env.BLENDER_PIPELINE_ENABLED !== 'true') {
         return NextResponse.json(
           { error: 'Blender pipeline (base_render_model) is currently disabled behind a feature flag.' },
@@ -396,17 +405,19 @@ export async function POST(request: Request) {
     const analysisCacheKey = projectFile 
       ? createHash('md5').update(`${projectFile.id}_${pbProvider}_${pbModel}`).digest('hex')
       : '';
-      
-    // Try to load cached analysis if caching is enabled
+          // Try to load cached analysis if caching is enabled
     if (projectFile && env.PROMPT_BRAIN_CACHE_ENABLED && analysisCacheKey && !isForceRegenerate) {
       try {
         const cachedAnalysis = await prisma.promptBrainAnalysis.findFirst({
           where: { cacheKey: analysisCacheKey }
         });
-        if (cachedAnalysis) {
+        if (cachedAnalysis && cachedAnalysis.provider === pbProvider) {
           analysisResult = JSON.parse(cachedAnalysis.analysisJson) as PromptBrainSchema;
           analysisId = cachedAnalysis.id;
           finalProvider = cachedAnalysis.provider as any;
+          if (pbProvider === 'gemini') {
+            console.log('Gemini PromptBrain skipped: cached analysis loaded');
+          }
         }
       } catch (cacheErr: any) {
         console.error('[PromptBrain Cache Read Error]:', cacheErr.message);
@@ -415,27 +426,41 @@ export async function POST(request: Request) {
     
     // If not cached or caching is disabled, run analysis
     if (!analysisResult && projectFile) {
-      if ((pbProvider === 'gemini' || isForceRegenerate) && env.GEMINI_API_KEY) {
-        try {
-          const geminiRes = await analyzeProjectImage(project.id, sceneType);
-          if (geminiRes.success && geminiRes.analysis && geminiRes.analysis.confidence >= (env.PROMPT_BRAIN_MIN_CONFIDENCE || 0.75)) {
-            analysisResult = geminiRes.analysis;
-            finalProvider = 'gemini';
-
-            // Run helper to process material mappings
-            try {
-              await processAutoMaterialMappings(project.id, analysisResult);
-            } catch (mapperErr: any) {
-              console.error('[PromptBrain Auto Material Mapper Error]:', mapperErr.message);
-            }
-          } else {
-            console.warn(`[PromptBrain Gemini Fallback]: Success=${geminiRes.success}, Confidence=${geminiRes.analysis?.confidence ?? 'N/A'}`);
-            finalProvider = 'manual';
-          }
-        } catch (geminiErr: any) {
-          console.error('[PromptBrain Gemini Request Error]:', geminiErr.message);
+      const isGeminiRequested = pbProvider === 'gemini' || isForceGemini;
+      
+      if (isGeminiRequested) {
+        if (!env.GEMINI_API_KEY) {
+          console.log('Gemini PromptBrain skipped: missing API key');
           finalProvider = 'manual';
+        } else {
+          console.log('Gemini PromptBrain attempted');
+          try {
+            const geminiRes = await analyzeProjectImage(project.id, sceneType);
+            if (geminiRes.success && geminiRes.analysis && geminiRes.analysis.confidence >= (env.PROMPT_BRAIN_MIN_CONFIDENCE || 0.75)) {
+              analysisResult = geminiRes.analysis;
+              finalProvider = 'gemini';
+              console.log('Gemini PromptBrain applied');
+
+              // Run helper to process material mappings
+              try {
+                await processAutoMaterialMappings(project.id, analysisResult);
+              } catch (mapperErr: any) {
+                console.error('[PromptBrain Auto Material Mapper Error]:', mapperErr.message);
+              }
+            } else {
+              console.warn(`[PromptBrain Gemini Fallback]: Success=${geminiRes.success}, Confidence=${geminiRes.analysis?.confidence ?? 'N/A'}`);
+              finalProvider = 'manual';
+              console.log('Gemini PromptBrain skipped: low confidence or unsuccessful analysis');
+            }
+          } catch (geminiErr: any) {
+            console.error('[PromptBrain Gemini Request Error]:', geminiErr.message);
+            finalProvider = 'manual';
+            console.log(`Gemini PromptBrain skipped: request error ${geminiErr.message}`);
+          }
         }
+      } else {
+        console.log('Gemini PromptBrain skipped: provider is manual');
+        finalProvider = 'manual';
       }
       
       // Fallback/Manual Mode: Construct manual analysis
@@ -564,69 +589,115 @@ export async function POST(request: Request) {
     finalSettings.projectType = projectType;
     finalSettings.sceneType = sceneType;
     finalSettings.materialChoices = combinedMaterials;
-    finalSettings.renderMode = userSettings.job_type || userSettings.jobType || composerResult.renderMode;
+    finalSettings.job_type = resolvedJobType;
+    finalSettings.renderMode = resolvedJobType || composerResult.renderMode;
     // Resolve mode and parameters
-    const geometryLockMode = userSettings.geometryLockMode || finalSettings.geometryLockMode || composerResult.geometryLockMode || 'strict_structure';
+    const geometryLockMode = userSettings.geometryLockMode || finalSettings.geometryLockMode || composerResult.geometryLockMode || 'balanced_archviz';
     let renderMode = geometryLockMode;
-    if (renderMode === 'strict' || renderMode === 'accurate' || renderMode === 'technical' || renderMode === 'strict_structure') {
-      renderMode = 'strict_structure';
-    } else if (renderMode === 'balanced' || renderMode === 'balanced_enhancement') {
-      renderMode = 'balanced_enhancement';
-    } else if (renderMode === 'creative' || renderMode === 'creative_concept') {
-      renderMode = 'creative_concept';
+    if (renderMode === 'strict_geometry' || renderMode === 'strict' || renderMode === 'accurate' || renderMode === 'technical' || renderMode === 'strict_structure') {
+      renderMode = 'strict_geometry';
+    } else if (renderMode === 'balanced_archviz' || renderMode === 'balanced' || renderMode === 'balanced_enhancement') {
+      renderMode = 'balanced_archviz';
+    } else if (renderMode === 'high_realism' || renderMode === 'creative' || renderMode === 'creative_concept') {
+      renderMode = 'high_realism';
     } else {
-      renderMode = 'strict_structure';
+      renderMode = 'balanced_archviz';
     }
 
     let denoise = userSettings.denoise !== undefined ? userSettings.denoise : composerResult.denoise;
-    let edgeStrength = 1.0;
-    let depthStrength = 1.0;
+    
+    // Check stylePreset defaults for custom strengths
+    let edgeStrength = userSettings.edge_control_strength !== undefined
+      ? Number(userSettings.edge_control_strength)
+      : (stylePreset.defaultSettings?.edge_control_strength !== undefined
+        ? Number(stylePreset.defaultSettings.edge_control_strength)
+        : 0.90);
 
-    if (geometryLockMode === 'technical' || geometryLockMode === 'strict' || geometryLockMode === 'strict_structure') {
+    let depthStrength = userSettings.depth_control_strength !== undefined
+      ? Number(userSettings.depth_control_strength)
+      : (stylePreset.defaultSettings?.depth_control_strength !== undefined
+        ? Number(stylePreset.defaultSettings.depth_control_strength)
+        : 0.75);
+
+    let steps = userSettings.steps !== undefined ? userSettings.steps : undefined;
+    let cfgScale = userSettings.cfg_scale !== undefined ? userSettings.cfg_scale : undefined;
+
+    if (renderMode === 'strict_geometry') {
       if (denoise === undefined || denoise === null) {
-        denoise = 0.35;
+        denoise = 0.32;
       } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.25), 0.45);
+        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.50);
       }
-      edgeStrength = 1.0;
-      depthStrength = 1.0;
-      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
-    } else if (geometryLockMode === 'accurate') {
+      if (userSettings.edge_control_strength === undefined) {
+        edgeStrength = 0.80;
+      }
+      if (userSettings.depth_control_strength === undefined) {
+        depthStrength = 0.85;
+      }
+      if (steps === undefined) {
+        steps = 30;
+      }
+      if (cfgScale === undefined) {
+        cfgScale = 6.0;
+      }
+      console.log('[Denoise Debug] mode:', renderMode, 'denoise:', denoise, 'source: mode_clamp')
+    } else if (renderMode === 'balanced_archviz') {
       if (denoise === undefined || denoise === null) {
-        denoise = 0.55;
+        denoise = 0.38;
       } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.50), 0.65);
+        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.70);
       }
-      edgeStrength = 1.0;
-      depthStrength = 1.0;
-      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
-    } else if (geometryLockMode === 'balanced' || geometryLockMode === 'balanced_enhancement') {
+      if (userSettings.edge_control_strength === undefined) {
+        edgeStrength = 0.65;
+      }
+      if (userSettings.depth_control_strength === undefined) {
+        depthStrength = 0.80;
+      }
+      if (steps === undefined) {
+        steps = 32;
+      }
+      if (cfgScale === undefined) {
+        cfgScale = 6.5;
+      }
+      console.log('[Denoise Debug] mode:', renderMode, 'denoise:', denoise, 'source: mode_clamp')
+    } else if (renderMode === 'high_realism') {
       if (denoise === undefined || denoise === null) {
         denoise = 0.65;
       } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.60), 0.75);
+        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.90);
       }
-      edgeStrength = 0.75;
-      depthStrength = 0.75;
-      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
-    } else if (geometryLockMode === 'creative' || geometryLockMode === 'creative_concept') {
-      if (denoise === undefined || denoise === null) {
-        denoise = 0.80;
-      } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.72), 0.88);
+      if (userSettings.edge_control_strength === undefined) {
+        edgeStrength = 0.50;
       }
-      edgeStrength = 0.40;
-      depthStrength = 0.40;
-      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
+      if (userSettings.depth_control_strength === undefined) {
+        depthStrength = 0.75;
+      }
+      if (steps === undefined) {
+        steps = 35;
+      }
+      if (cfgScale === undefined) {
+        cfgScale = 6.5;
+      }
+      console.log('[Denoise Debug] mode:', renderMode, 'denoise:', denoise, 'source: mode_clamp')
     } else {
       if (denoise === undefined || denoise === null) {
-        denoise = 0.35;
+        denoise = 0.38;
       } else {
-        denoise = Math.min(Math.max(Number(denoise), 0.25), 0.45);
+        denoise = Math.min(Math.max(Number(denoise), 0.15), 0.45);
       }
-      edgeStrength = 1.0;
-      depthStrength = 1.0;
-      console.log('[Denoise Debug] mode:', geometryLockMode, 'denoise:', denoise, 'source: mode_clamp')
+      if (userSettings.edge_control_strength === undefined) {
+        edgeStrength = 0.90;
+      }
+      if (userSettings.depth_control_strength === undefined) {
+        depthStrength = 0.75;
+      }
+      if (steps === undefined) {
+        steps = 32;
+      }
+      if (cfgScale === undefined) {
+        cfgScale = 6.5;
+      }
+      console.log('[Denoise Debug] mode:', renderMode, 'denoise:', denoise, 'source: mode_clamp')
     }
 
     finalSettings.render_mode = renderMode;
@@ -636,6 +707,8 @@ export async function POST(request: Request) {
     finalSettings.denoise_strength = denoise;
     finalSettings.edge_control_strength = edgeStrength;
     finalSettings.depth_control_strength = depthStrength;
+    finalSettings.steps = steps;
+    finalSettings.cfg_scale = cfgScale;
     finalSettings.geometry_drift_score = null;
     finalSettings.structure_check_status = null;
     
@@ -650,6 +723,14 @@ export async function POST(request: Request) {
     if (userSettings.steps) finalSettings.steps = userSettings.steps;
     if (userSettings.cfg_scale) finalSettings.cfg_scale = userSettings.cfg_scale;
     if (userSettings.seed) finalSettings.seed = userSettings.seed;
+    if (userSettings.upscale_factor !== undefined) finalSettings.upscale_factor = userSettings.upscale_factor;
+    if (userSettings.upscale_denoise !== undefined) finalSettings.upscale_denoise = userSettings.upscale_denoise;
+
+    // Log job parameters
+    console.log(`[Gemini Enhancement] applied/skipped/failed status: ${geminiEnhancerStatus.status}${geminiEnhancerStatus.error ? ` (error: ${geminiEnhancerStatus.error})` : ''}`);
+    console.log(`[Job Render Profile] Chosen profile: ${finalSettings.geometryLockMode}`);
+    console.log(`[Job First Pass Settings] steps: ${finalSettings.steps}, cfg: ${finalSettings.cfg_scale}, denoise: ${finalSettings.denoise_strength}, canny strength: ${finalSettings.edge_control_strength}, depth strength: ${finalSettings.depth_control_strength}`);
+    console.log(`[Job Second Pass Settings] upscale_factor: ${finalSettings.upscale_factor}, upscale_denoise: ${finalSettings.upscale_denoise}`);
 
     // Compute deterministic cache key from render-critical parameters
     const inputFileUrl = project.projectFiles[0]?.fileUrl || '';

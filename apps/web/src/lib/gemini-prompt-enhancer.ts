@@ -21,12 +21,14 @@ export async function enhancePromptWithGemini(
   // Check if server-side only
   if (typeof window !== 'undefined') {
     if (tracker) tracker.status = 'skipped';
+    console.log('Gemini enhancer skipped: browser environment');
     return input;
   }
 
-  // Return the original prompt if GEMINI_PROMPT_ENHANCER_ENABLED is not "true"
-  if (process.env.GEMINI_PROMPT_ENHANCER_ENABLED !== 'true') {
+  // Return the original prompt if GEMINI_PROMPT_ENHANCER_ENABLED is not enabled
+  if (!env.GEMINI_PROMPT_ENHANCER_ENABLED) {
     if (tracker) tracker.status = 'skipped';
+    console.log('Gemini enhancer skipped: enhancer disabled');
     return input;
   }
 
@@ -34,11 +36,13 @@ export async function enhancePromptWithGemini(
   const apiKey = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey.trim() === '') {
     if (tracker) tracker.status = 'skipped';
+    console.log('Gemini enhancer skipped: missing API key');
     return input;
   }
 
   if (!input || input.trim() === '') {
     if (tracker) tracker.status = 'skipped';
+    console.log('Gemini enhancer skipped: empty input');
     return input;
   }
 
@@ -48,18 +52,37 @@ export async function enhancePromptWithGemini(
   const systemInstruction = `You are a professional architectural visualization prompt engineer and enhancer.
 Your task is to take a raw/rule-based architectural render positive prompt and enhance it into a highly detailed, professional-grade Stable Diffusion positive prompt.
 
-STRICT PRESERVATION RULES:
-1. Preserve the original geometry, structure, room layout, window positions, door positions, and walls. Do NOT add new structural elements, rooms, or floors.
-2. Preserve the camera angle, elevation, and perspective described in the original prompt.
-3. Preserve the core materials (e.g. wood, concrete, glass, metal) and their layout.
-4. Preserve the lighting logic, reflections, glass properties, mirror properties, shadows, and overall atmosphere.
-5. Preserve the user's intent and any explicit modifiers or style preferences.
+CRITICAL INSTRUCTION: DO NOT REDESIGN OR ALTER THE BUILDING. The original architectural geometry must be preserved exactly.
 
-ENHANCEMENT RULES:
-1. Add vivid, sensory material detail (e.g. instead of just "concrete", describe "rough exposed concrete with visible aggregate texture and matte finish").
-2. Enhance lighting descriptions (e.g. specify light color temperature, ambient soft light, soft shadows, sharp architectural highlights).
-3. Use professional architectural photography terms (e.g. "architectural photography, sharp focus, 8k resolution, photorealistic").
-4. Output ONLY the final enhanced positive prompt. Do NOT include any explanations, introductory text, markdown code block formatting (such as \`\`\`), or additional commentary. The entire response must be a single comma-separated string containing the prompt.`;
+STRICT PRESERVATION RULES:
+- preserve exact geometry
+- do not alter facade
+- do not change windows, doors, gate, railings, walls, roof, structure, or camera angle/perspective
+- Do NOT add new structural elements, rooms, openings, or floors
+
+ENHANCEMENT ONLY RULES:
+1. ONLY improve photorealism, lighting, materials, shadows, reflections, glass properties, vegetation, landscape scenery, and texture quality.
+2. Push for the following premium terms in the enhanced prompt:
+   - premium photorealistic architectural visualization
+   - realistic exterior materials
+   - white smooth plaster walls
+   - natural wood gate/facade details
+   - realistic glass railings with reflections
+   - aluminum window frames
+   - concrete slab edges
+   - sharp architectural lines
+   - realistic daylight
+   - sun-cast shadows
+   - ambient occlusion
+   - contact shadows
+   - global illumination
+   - realistic texture detail
+   - professional archviz render quality
+3. Ensure the output contains no visible black sketch outlines, CAD drawing lines, grid artifacts, or wireframe traces. All outlines from the input sketch must be translated into clean, smooth physical transitions between realistic materials (e.g., plaster meeting wood, glass meeting aluminum frame) without cartoonish drawing lines.
+4. Add vivid, sensory material detail (e.g., instead of just "concrete", describe "rough exposed concrete with visible aggregate texture and matte finish").
+5. Enhance lighting descriptions (e.g., specify light color temperature, ambient soft light, soft shadows, sharp architectural highlights, sun-cast shadows).
+6. Use professional architectural photography terms (e.g., "architectural photography, sharp focus, 8k resolution, photorealistic").
+7. Output ONLY the final enhanced positive prompt. Do NOT include any explanations, introductory text, markdown code block formatting (such as \`\`\`), or additional commentary. The entire response must be a single comma-separated string containing the prompt.`;
 
   const requestBody = {
     contents: [
@@ -81,6 +104,7 @@ ENHANCEMENT RULES:
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
+  console.log('Gemini enhancer attempted');
   try {
     const response = await fetch(url, {
       method: 'POST',
@@ -119,6 +143,7 @@ ENHANCEMENT RULES:
       throw new Error('Enhanced prompt became empty after sanitization.');
     }
 
+    console.log('Gemini enhancer applied');
     if (tracker) {
       tracker.status = 'applied';
     }
@@ -131,7 +156,7 @@ ENHANCEMENT RULES:
       errMsg = `Request timed out after ${timeoutMs}ms`;
     }
 
-    console.error(`[Gemini Prompt Enhancer Error]: ${errMsg}`);
+    console.log(`Gemini enhancer failed: ${errMsg}`);
     
     if (tracker) {
       tracker.status = 'failed';

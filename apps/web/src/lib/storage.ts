@@ -21,7 +21,7 @@ export function getS3Client(): S3Client {
 }
 
 export const ALLOWED_FOLDERS = ['inputs', 'outputs', 'approved', 'training', 'exports', 'previews'] as const;
-export const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'glb', 'obj', 'fbx', 'blend', 'zip'] as const;
+export const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'glb', 'obj', 'fbx', 'blend', 'zip', 'skp'] as const;
 
 /**
  * Validates whether the folder name is safe and allowed.

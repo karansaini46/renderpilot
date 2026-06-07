@@ -200,17 +200,23 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
 
   // Strict structure positive terms injection
   let strictStructurePositive = '';
-  if (geometryLockMode === 'strict_structure') {
+  if (geometryLockMode === 'strict_structure' || geometryLockMode === 'strict_geometry' || geometryLockMode === 'balanced_archviz' || geometryLockMode === 'high_realism') {
     const strictPositiveTerms = [
-      'photorealistic architectural render optimization',
-      'realistic materials',
-      'natural lighting',
-      'accurate shadows',
-      'glass reflections',
+      'premium photorealistic architectural visualization',
+      'realistic exterior materials',
+      'white smooth plaster walls',
+      'natural wood gate/facade details',
+      'realistic glass railings with reflections',
+      'aluminum window frames',
+      'concrete slab edges',
+      'sharp architectural lines',
+      'realistic daylight',
+      'sun-cast shadows',
+      'ambient occlusion',
+      'contact shadows',
+      'global illumination',
       'realistic texture detail',
-      'professional archviz polish',
-      'same building geometry',
-      'same camera composition'
+      'professional archviz render quality'
     ];
     strictStructurePositive = sanitizeAndReport(strictPositiveTerms.join(', '), 'unknown');
   }
@@ -316,21 +322,37 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
     'layout change', 'camera shift', 'low quality', 'text', 'watermark'
   ];
 
-  const strictStructureNegativeTerms = geometryLockMode === 'strict_structure'
+  const isStrictOrArchvizMode = ['strict_structure', 'strict_geometry', 'balanced_archviz', 'high_realism'].includes(geometryLockMode);
+  const strictStructureNegativeTerms = isStrictOrArchvizMode
     ? [
-        'changed building structure',
+        'warped architecture',
         'changed facade',
-        'moved windows',
-        'extra floors',
+        'distorted building',
+        'crooked walls',
+        'bent balcony',
+        'extra windows',
         'missing windows',
-        'changed roofline',
-        'distorted geometry',
-        'new architecture',
-        'redesigned building',
-        'changed camera angle',
-        'warped doors',
-        'hallucinated openings',
-        'unrealistic proportions'
+        'changed gate',
+        'deformed railings',
+        'bad perspective',
+        'cartoon',
+        'sketch',
+        'painting',
+        'plastic texture',
+        'blurry',
+        'low detail',
+        'oversmoothed',
+        'unrealistic lighting',
+        'distorted person',
+        'bad human',
+        'black outlines',
+        'CAD lines',
+        'drawing outlines',
+        'wireframe grids',
+        'sketch lines',
+        'pencil lines',
+        'blueprint lines',
+        'contour lines'
       ]
     : [];
 
@@ -351,12 +373,12 @@ export function composePrompt(input: PromptComposerInput): PromptComposerOutput 
   // 14. Determine fallback settings
   const finalRenderMode = renderMode || analysis.suggested_render_mode || 'img2img';
   
-  let defaultDenoise = stylePreset.defaultSettings?.denoise ?? 0.65;
-  if (geometryLockMode === 'strict_structure') {
-    defaultDenoise = 0.25;
-  } else if (geometryLockMode === 'balanced_enhancement') {
-    defaultDenoise = 0.40;
-  } else if (geometryLockMode === 'creative_concept') {
+  let defaultDenoise = stylePreset.defaultSettings?.denoise ?? 0.38;
+  if (geometryLockMode === 'strict_geometry' || geometryLockMode === 'strict_structure') {
+    defaultDenoise = 0.32;
+  } else if (geometryLockMode === 'balanced_archviz' || geometryLockMode === 'balanced_enhancement') {
+    defaultDenoise = 0.38;
+  } else if (geometryLockMode === 'high_realism' || geometryLockMode === 'creative_concept') {
     defaultDenoise = 0.65;
   }
 
