@@ -15,11 +15,12 @@ export async function POST(request: Request) {
     }
 
     const { projectId, folder, filename, contentType, userId } = body;
+    const resolvedContentType = contentType || 'application/octet-stream';
 
     // Validate presence of required properties
-    if (!projectId || !folder || !filename || !contentType) {
+    if (!projectId || !folder || !filename) {
       return NextResponse.json(
-        { error: 'Missing required parameters: projectId, folder, filename, and contentType are required' },
+        { error: 'Missing required parameters: projectId, folder, and filename are required' },
         { status: 400 }
       );
     }
@@ -40,7 +41,7 @@ export async function POST(request: Request) {
 
     // Generate target using the dynamic adapter
     const adapter = getStorageAdapter();
-    const target = await adapter.createUploadTarget(key, contentType);
+    const target = await adapter.createUploadTarget(key, resolvedContentType);
 
     return NextResponse.json({
       url: target.url,

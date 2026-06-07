@@ -694,7 +694,7 @@ export default function ProjectDetails({ params }: ProjectDetailsPageProps) {
           projectId: id,
           folder: 'inputs',
           filename: filename,
-          contentType: selectedFile.type,
+          contentType: selectedFile.type || 'application/octet-stream',
         }),
       });
 
